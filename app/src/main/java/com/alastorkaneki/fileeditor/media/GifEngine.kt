@@ -99,41 +99,49 @@ class GifEngine(private val context: Context) {
             options.maxDimension.coerceIn(96, 2160),
         )
         val output = File.createTempFile("file_editor_", ".gif", context.cacheDir)
-        output.outputStream().use { stream ->
-            val encoder = GifEncoder(
-                stream,
-                targetWidth,
-                targetHeight,
-                options.loopCount.coerceIn(0, 100),
-            )
-            val imageOptions = ImageOptions().apply {
-                setDelay(options.delayMs.coerceIn(20, 5000).toLong(), TimeUnit.MILLISECONDS)
-                setColorQuantizer(KMeansQuantizer.INSTANCE)
-                setDitherer(FloydSteinbergDitherer.INSTANCE)
-            }
-
-            ordered.forEachIndexed { index, source ->
-                val normalized = composeFrame(
-                    source,
+        try {
+            output.outputStream().use { stream ->
+                val encoder = GifEncoder(
+                    stream,
                     targetWidth,
                     targetHeight,
-                    fitInside = options.fitInside,
-                    backgroundColor = options.backgroundColor,
+                    options.loopCount.coerceIn(0, 100),
                 )
-                val rendered = options.glitch?.let {
-                    GlitchEngine.render(normalized, it.copy(seed = it.seed + index * 7919))
-                } ?: normalized
-
-                try {
-                    encoder.addImage(toArgbArray(rendered), imageOptions)
-                } finally {
-                    if (rendered !== normalized) rendered.recycle()
-                    if (normalized !== source) normalized.recycle()
+                val imageOptions = ImageOptions().apply {
+                    setDelay(options.delayMs.coerceIn(20, 5000).toLong(), TimeUnit.MILLISECONDS)
+                    setColorQuantizer(KMeansQuantizer.INSTANCE)
+                    setDitherer(FloydSteinbergDitherer.INSTANCE)
                 }
+
+                ordered.forEachIndexed { index, source ->
+                    val normalized = composeFrame(
+                        source,
+                        targetWidth,
+                        targetHeight,
+                        fitInside = options.fitInside,
+                        backgroundColor = options.backgroundColor,
+                    )
+                    val rendered = options.glitch?.let {
+                        GlitchEngine.render(normalized, it.copy(seed = it.seed + index * 7919))
+                    } ?: normalized
+
+                    try {
+                        check(rendered.width == targetWidth && rendered.height == targetHeight) {
+                            "Rendered frame dimensions changed unexpectedly"
+                        }
+                        encoder.addImage(toArgbRows(rendered), imageOptions)
+                    } finally {
+                        if (rendered !== normalized) rendered.recycle()
+                        if (normalized !== source) normalized.recycle()
+                    }
+                }
+                encoder.finishEncoding()
             }
-            encoder.finishEncoding()
+            return output
+        } catch (error: Throwable) {
+            output.delete()
+            throw error
         }
-        return output
     }
 
     private fun targetSize(width: Int, height: Int, maxDimension: Int): Pair<Int, Int> {
@@ -185,11 +193,18 @@ class GifEngine(private val context: Context) {
         return output
     }
 
-    private fun toArgbArray(bitmap: Bitmap): Array<IntArray> {
+    /**
+     * Square GifEncoder expects [row][column] ([height][width]). The old code
+     * supplied [width][height], which made portrait frames appear wider than the
+     * GIF logical screen and triggered "Image does not fit in screen".
+     */
+    private fun toArgbRows(bitmap: Bitmap): Array<IntArray> {
         val width = bitmap.width
         val height = bitmap.height
         val flat = IntArray(width * height)
         bitmap.getPixels(flat, 0, width, 0, 0, width, height)
-        return Array(width) { x -> IntArray(height) { y -> flat[y * width + x] } }
+        return Array(height) { y ->
+            IntArray(width) { x -> flat[y * width + x] }
+        }
     }
 }
