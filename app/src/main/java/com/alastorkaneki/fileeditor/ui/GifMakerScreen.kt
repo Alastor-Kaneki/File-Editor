@@ -44,6 +44,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -61,6 +62,7 @@ import com.alastorkaneki.fileeditor.media.GifEngine
 import com.alastorkaneki.fileeditor.media.GifOptions
 import com.alastorkaneki.fileeditor.media.GlitchEngine
 import com.alastorkaneki.fileeditor.media.GlitchSettings
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -85,6 +87,7 @@ fun GifMakerScreen(
     var previewPosition by remember { mutableStateOf(0f) }
     var preview by remember { mutableStateOf<Bitmap?>(null) }
     var loadingPreview by remember { mutableStateOf(false) }
+    var previewGeneration by remember { mutableIntStateOf(0) }
     var creating by remember { mutableStateOf(false) }
     var delayMs by remember { mutableStateOf(120f) }
     var maxFrames by remember { mutableStateOf(36f) }
@@ -126,14 +129,19 @@ fun GifMakerScreen(
             videoDurationMs = 0L
             return@LaunchedEffect
         }
-        runCatching { withContext(Dispatchers.IO) { RobustMediaLoader.readDurationMs(context, uri) } }
-            .onSuccess {
-                videoDurationMs = it
-                trimStartMs = 0L
-                trimEndMs = it
-                previewPosition = 0f
+        try {
+            val duration = withContext(Dispatchers.IO) {
+                RobustMediaLoader.readDurationMs(context, uri)
             }
-            .onFailure { message = "Unable to read video: ${it.message ?: it::class.java.simpleName}" }
+            videoDurationMs = duration
+            trimStartMs = 0L
+            trimEndMs = duration
+            previewPosition = 0f
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            message = "Unable to read video: ${error.message ?: error::class.java.simpleName}"
+        }
     }
 
     val previewKey = videoUri?.toString() ?: imageUris.firstOrNull()?.toString()
@@ -151,33 +159,46 @@ fun GifMakerScreen(
         val uri = videoUri ?: imageUris.firstOrNull() ?: run {
             preview?.recycle()
             preview = null
+            loadingPreview = false
             return@LaunchedEffect
         }
+
+        val generation = previewGeneration + 1
+        previewGeneration = generation
+        val requestedVideoUri = videoUri
+        val requestedVideoDurationMs = videoDurationMs
+        val requestedPosition = previewPosition
+        val requestedGlitchEnabled = glitchEnabled
+        val requestedGlitch = currentGifGlitch(
+            glitchIntensity,
+            glitchShift,
+            glitchSlices,
+            glitchNoise,
+            glitchPixelSort,
+            glitchSmear,
+        )
+
         loadingPreview = true
-        delay(60)
-        runCatching {
-            withContext(Dispatchers.IO) {
-                val source = if (videoUri != null) {
+        if (message?.startsWith("Preview failed") == true) message = null
+
+        try {
+            // Debounce sliders. A superseded LaunchedEffect is cancellation, not an error.
+            delay(100L)
+            val result = withContext(Dispatchers.IO) {
+                val source = if (requestedVideoUri != null) {
                     RobustMediaLoader.loadVideoFrame(
                         context,
                         uri,
-                        timeUs = (previewPosition * videoDurationMs * 1000L).toLong(),
+                        timeUs = (requestedPosition * requestedVideoDurationMs * 1000L).toLong(),
                         maxDimension = 900,
                     )
                 } else {
                     RobustMediaLoader.loadBitmap(context, uri, 900)
                 }
 
-                if (glitchEnabled) {
+                if (requestedGlitchEnabled) {
                     try {
-                        GlitchEngine.render(source, currentGifGlitch(
-                            glitchIntensity,
-                            glitchShift,
-                            glitchSlices,
-                            glitchNoise,
-                            glitchPixelSort,
-                            glitchSmear,
-                        ))
+                        GlitchEngine.render(source, requestedGlitch)
                     } finally {
                         source.recycle()
                     }
@@ -185,11 +206,22 @@ fun GifMakerScreen(
                     source
                 }
             }
-        }.onSuccess { result ->
-            preview?.takeIf { it !== result }?.recycle()
-            preview = result
-        }.onFailure { message = "Preview failed: ${it.message ?: it::class.java.simpleName}" }
-        loadingPreview = false
+
+            if (generation == previewGeneration) {
+                preview?.takeIf { it !== result }?.recycle()
+                preview = result
+            } else {
+                result.recycle()
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            if (generation == previewGeneration) {
+                message = "Preview failed: ${error.message ?: error::class.java.simpleName}"
+            }
+        } finally {
+            if (generation == previewGeneration) loadingPreview = false
+        }
     }
 
     fun createGif() {
@@ -218,7 +250,7 @@ fun GifMakerScreen(
             )
             val name = "${if (glitchEnabled) "Glitch-" else ""}GIF-${System.currentTimeMillis()}.gif"
 
-            runCatching {
+            try {
                 withContext(Dispatchers.IO) {
                     val temp = videoUri?.let { engine.createFromVideo(it, options) }
                         ?: engine.createFromImages(imageUris, options)
@@ -228,9 +260,14 @@ fun GifMakerScreen(
                         temp.delete()
                     }
                 }
-            }.onSuccess { message = "Saved $name to Pictures/FileEditor" }
-                .onFailure { message = "GIF failed: ${it.message ?: it::class.java.simpleName}" }
-            creating = false
+                message = "Saved $name to Pictures/FileEditor"
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                message = "GIF failed: ${error.message ?: error::class.java.simpleName}"
+            } finally {
+                creating = false
+            }
         }
     }
 
@@ -246,7 +283,11 @@ fun GifMakerScreen(
                 title = {
                     Column {
                         Text("GIF Maker")
-                        Text(sourceDescription, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            sourceDescription,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 },
                 navigationIcon = {
@@ -273,7 +314,7 @@ fun GifMakerScreen(
                     contentAlignment = Alignment.Center,
                 ) {
                     when {
-                        loadingPreview -> CircularProgressIndicator()
+                        loadingPreview && preview == null -> CircularProgressIndicator()
                         preview != null -> Image(
                             bitmap = requireNotNull(preview).asImageBitmap(),
                             contentDescription = "GIF frame preview",
@@ -316,9 +357,12 @@ fun GifMakerScreen(
 
             if (videoUri != null && videoDurationMs > 0L) {
                 item {
-                    GifSlider("Preview position", formatGifTime((previewPosition * videoDurationMs).toLong()), previewPosition, 0f..1f) {
-                        previewPosition = it
-                    }
+                    GifSlider(
+                        "Preview position",
+                        formatGifTime((previewPosition * videoDurationMs).toLong()),
+                        previewPosition,
+                        0f..1f,
+                    ) { previewPosition = it }
                 }
                 item {
                     Text("Video trim", style = MaterialTheme.typography.headlineSmall)
@@ -345,6 +389,15 @@ fun GifMakerScreen(
             item { GifToggle("Reverse frame order", reverse) { reverse = it } }
             item { GifToggle("Ping-pong loop", pingPong) { pingPong = it } }
             item { GifToggle("Fit entire image (letterbox)", fitInside) { fitInside = it } }
+            if (imageUris.size == 1) {
+                item {
+                    Text(
+                        "One-image mode duplicates the selected image to the Maximum frames value. With glitch enabled, each duplicate receives a different glitch seed, creating real animation.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
 
             item { Text("Animated glitch", style = MaterialTheme.typography.headlineSmall) }
             item {
