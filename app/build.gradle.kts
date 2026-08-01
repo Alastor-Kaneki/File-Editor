@@ -33,8 +33,8 @@ android {
         applicationId = "com.alastorkaneki.fileeditor"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.3.0"
+        versionCode = 5
+        versionName = "1.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -84,6 +84,7 @@ android {
             "META-INF/LICENSE*",
             "META-INF/NOTICE*",
         )
+        jniLibs.pickFirsts += setOf("**/libc++_shared.so")
     }
 }
 
@@ -116,6 +117,7 @@ dependencies {
     implementation("androidx.media3:media3-common:1.10.1")
     implementation("androidx.media3:media3-exoplayer:1.10.1")
 
+    implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full:8.1.7")
     implementation("com.github.Adonai:jaudiotagger:2.3.15")
     implementation("com.squareup:gifencoder:0.10.1")
 
