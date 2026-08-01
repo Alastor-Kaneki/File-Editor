@@ -11,7 +11,10 @@ A native Android media studio that scans shared storage for audio, photos and vi
 - Edits title, artist, album, album artist, genre, year, track, disc, composer, publisher/label, ISRC, BPM, comments and lyrics.
 - Replaces or removes embedded cover artwork.
 - Applies trim, independent speed and pitch, sample-rate conversion, and presets including Nightcore, Vaporwave, Telephone and Deep Voice.
-- Renders an exact 15-second preview through the same Media3 processing pipeline used for final AAC/M4A export.
+- Renders an exact 15-second preview through the same FFmpeg processing chain used for final export.
+- Exports M4A/AAC, MP3, WAV, FLAC, OGG Vorbis, Opus, raw AAC, ALAC, AIFF, AMR-NB, AMR-WB, WMA, AC3, E-AC3, CAF and WavPack.
+- Includes custom FFmpeg encoder, muxer and extension fields for additional formats included in the bundled build.
+- Copies content-provider input to a private seekable cache file before FFmpeg processing, avoiding provider-specific SAF failures.
 
 ### Photos and videos
 
@@ -32,13 +35,16 @@ A native Android media studio that scans shared storage for audio, photos and vi
 
 ### GIF Maker
 
-- Builds GIF89a animations from multiple images.
+- Builds GIF89a animations from one or more images.
+- A single image is duplicated to the selected frame count; animated glitch mode varies the seed on every duplicate.
 - Extracts frames from videos to create GIFs.
 - Optional per-frame advanced glitch rendering for animated glitch GIFs.
 - Controls video trim, reverse, ping-pong, loop count, fit/crop layout, frame delay, frame count and output resolution.
+- Handles portrait and landscape frames using the row-major pixel layout required by the GIF encoder.
+- Debounces realtime previews and treats superseded Compose preview work as cancellation rather than displaying a false error.
 - Saves finished GIFs to `Pictures/FileEditor`.
 
-The GIF pipeline uses Square's pure Java GIF encoder, which is designed for Android. Image effects use an on-device bitmap pipeline instead of bundling the full native ImageMagick distribution, avoiding large ABI-specific native libraries while keeping the preview and conversion workflow offline.
+The GIF pipeline uses Square's pure Java GIF encoder, which is designed for Android. Image effects use an on-device bitmap pipeline. Audio format conversion uses a maintained FFmpegKit build and remains offline.
 
 ## Persistent signing
 
@@ -78,7 +84,8 @@ Requirements:
 
 - Kotlin and Jetpack Compose
 - MediaStore for discovery and gallery output
-- AndroidX Media3 Transformer and ExoPlayer for audio/video processing and preview playback
+- AndroidX Media3 Transformer and ExoPlayer for video processing and preview playback
+- Maintained FFmpegKit full package for audio processing and conversion
 - AndroidX ExifInterface for photo metadata
 - jaudiotagger-android for audio metadata
 - Square GIF Encoder for GIF89a output
@@ -86,4 +93,4 @@ Requirements:
 
 ## Notes
 
-Metadata and codec support varies by file format, storage provider and device. Photo EXIF writes are supported for JPEG, PNG and WebP. DRM-protected, cloud-placeholder, read-only or system-owned files may reject modifications or exports.
+Metadata and codec support varies by file format, storage provider and device. Photo EXIF writes are supported for JPEG, PNG and WebP. DRM-protected, cloud-placeholder, read-only or system-owned files may reject modifications or exports. Custom FFmpeg codec/container combinations must be supported by the bundled FFmpeg build.
