@@ -18,10 +18,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AudioFile
-import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -37,20 +40,29 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import com.alastorkaneki.fileeditor.data.RobustMediaLoader
 import com.alastorkaneki.fileeditor.media.AudioExportSettings
 import com.alastorkaneki.fileeditor.media.MediaExportEngine
+import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
@@ -62,6 +74,7 @@ fun AudioEffectsScreen(
 ) {
     val context = LocalContext.current
     val exporter = remember { MediaExportEngine(context) }
+    val player = remember { ExoPlayer.Builder(context).build() }
     val scope = rememberCoroutineScope()
     var sourceUri by remember { mutableStateOf<Uri?>(null) }
     var durationMs by remember { mutableStateOf(0L) }
@@ -70,6 +83,63 @@ fun AudioEffectsScreen(
     var loading by remember { mutableStateOf(false) }
     var exporting by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+
+    var previewFile by remember { mutableStateOf<File?>(null) }
+    var previewRendering by remember { mutableStateOf(false) }
+    var previewReady by remember { mutableStateOf(false) }
+    var previewPlaying by remember { mutableStateOf(false) }
+    var previewPositionMs by remember { mutableStateOf(0L) }
+    var previewDurationMs by remember { mutableStateOf(0L) }
+    var previewRevision by remember { mutableIntStateOf(0) }
+    val latestPreviewFile by rememberUpdatedState(previewFile)
+
+    fun clearPreview() {
+        player.pause()
+        player.stop()
+        player.clearMediaItems()
+        previewFile?.delete()
+        previewFile = null
+        previewReady = false
+        previewPlaying = false
+        previewPositionMs = 0L
+        previewDurationMs = 0L
+    }
+
+    DisposableEffect(player) {
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                previewPlaying = isPlaying
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) {
+                    previewDurationMs = player.duration.takeIf { it > 0L } ?: 0L
+                } else if (playbackState == Player.STATE_ENDED) {
+                    previewPlaying = false
+                    previewPositionMs = previewDurationMs
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                previewPlaying = false
+                message = "Preview playback failed: ${error.message ?: error.errorCodeName}"
+            }
+        }
+        player.addListener(listener)
+        onDispose {
+            player.removeListener(listener)
+            player.release()
+            latestPreviewFile?.delete()
+        }
+    }
+
+    LaunchedEffect(previewPlaying) {
+        while (previewPlaying) {
+            previewPositionMs = player.currentPosition.coerceAtLeast(0L)
+            previewDurationMs = player.duration.takeIf { it > 0L } ?: previewDurationMs
+            delay(150L)
+        }
+    }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -91,6 +161,18 @@ fun AudioEffectsScreen(
         loading = false
     }
 
+    LaunchedEffect(sourceUri, settings) {
+        previewRevision += 1
+        clearPreview()
+    }
+
+    fun normalizedSettings(): AudioExportSettings {
+        val safeDuration = durationMs.coerceAtLeast(1L)
+        val start = settings.startMs.coerceIn(0L, safeDuration - 1L)
+        val end = settings.endMs.coerceIn(start + 1L, safeDuration)
+        return settings.copy(startMs = start, endMs = end)
+    }
+
     fun preset(name: String) {
         settings = when (name) {
             "Nightcore" -> settings.copy(speed = 1.28f, pitch = 1.22f, sampleRateHz = 48000)
@@ -104,6 +186,43 @@ fun AudioEffectsScreen(
         }
     }
 
+    fun renderPreview() {
+        val uri = sourceUri ?: return
+        if (previewRendering || durationMs <= 0L) return
+        val requestedSettings = normalizedSettings()
+        val requestRevision = previewRevision + 1
+        previewRevision = requestRevision
+        clearPreview()
+
+        scope.launch {
+            previewRendering = true
+            message = null
+            runCatching {
+                exporter.renderAudioPreview(
+                    input = uri,
+                    settings = requestedSettings,
+                    maxSourceDurationMs = 15_000L,
+                )
+            }.onSuccess { file ->
+                if (previewRevision != requestRevision) {
+                    file.delete()
+                } else {
+                    previewFile = file
+                    previewReady = true
+                    player.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
+                    player.prepare()
+                    player.playWhenReady = true
+                    message = "Preview ready: exact effects rendered from the first 15 seconds of the selected range"
+                }
+            }.onFailure { error ->
+                if (previewRevision == requestRevision) {
+                    message = "Preview render failed: ${error.message ?: error::class.java.simpleName}"
+                }
+            }
+            previewRendering = false
+        }
+    }
+
     fun export() {
         val uri = sourceUri ?: return
         if (exporting) return
@@ -113,10 +232,7 @@ fun AudioEffectsScreen(
             runCatching {
                 exporter.exportAudio(
                     input = uri,
-                    settings = settings.copy(
-                        startMs = settings.startMs.coerceIn(0L, durationMs.coerceAtLeast(1L) - 1L),
-                        endMs = settings.endMs.coerceIn(settings.startMs + 1L, durationMs.coerceAtLeast(1L)),
-                    ),
+                    settings = normalizedSettings(),
                     displayName = outputName,
                 )
             }.onSuccess { message = "Saved ${outputName}.m4a to Music/FileEditor" }
@@ -132,14 +248,14 @@ fun AudioEffectsScreen(
                     Column {
                         Text("Audio Effects")
                         Text(
-                            "Trim • speed • pitch • sample rate • convert",
+                            "Trim • speed • pitch • sample rate • preview • convert",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onExit, enabled = !exporting) {
+                    IconButton(onClick = onExit, enabled = !exporting && !previewRendering) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -179,7 +295,7 @@ fun AudioEffectsScreen(
             item {
                 Button(
                     onClick = { picker.launch(arrayOf("audio/*")) },
-                    enabled = !exporting,
+                    enabled = !exporting && !previewRendering,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Icon(Icons.Default.AudioFile, contentDescription = null)
@@ -204,6 +320,7 @@ fun AudioEffectsScreen(
                             )
                         },
                         valueRange = 0f..durationMs.toFloat().coerceAtLeast(1f),
+                        enabled = !previewRendering,
                     )
                     Text(
                         "Output length before speed change: ${formatAudioTime((settings.endMs - settings.startMs).coerceAtLeast(0L))}",
@@ -214,9 +331,9 @@ fun AudioEffectsScreen(
             }
 
             item { Text("Presets", style = MaterialTheme.typography.headlineSmall) }
-            item { AudioChoices(listOf("Reset", "Nightcore", "Slowed"), ::preset) }
-            item { AudioChoices(listOf("Vaporwave", "Chipmunk", "Deep voice"), ::preset) }
-            item { AudioChoices(listOf("Telephone", "Podcast", "Original"), ::preset) }
+            item { AudioChoices(listOf("Reset", "Nightcore", "Slowed"), !previewRendering, ::preset) }
+            item { AudioChoices(listOf("Vaporwave", "Chipmunk", "Deep voice"), !previewRendering, ::preset) }
+            item { AudioChoices(listOf("Telephone", "Podcast", "Original"), !previewRendering, ::preset) }
 
             item { Text("Time and tone", style = MaterialTheme.typography.headlineSmall) }
             item {
@@ -225,6 +342,7 @@ fun AudioEffectsScreen(
                     "${"%.2f".format(settings.speed)}×",
                     settings.speed,
                     0.25f..4f,
+                    !previewRendering,
                 ) { settings = settings.copy(speed = it) }
             }
             item {
@@ -233,6 +351,7 @@ fun AudioEffectsScreen(
                     "${"%.2f".format(settings.pitch)}×",
                     settings.pitch,
                     0.25f..4f,
+                    !previewRendering,
                 ) { settings = settings.copy(pitch = it) }
             }
             item {
@@ -245,7 +364,7 @@ fun AudioEffectsScreen(
 
             item { Text("Output sample rate", style = MaterialTheme.typography.headlineSmall) }
             item {
-                AudioChoices(listOf("Original", "8 kHz", "16 kHz")) { value ->
+                AudioChoices(listOf("Original", "8 kHz", "16 kHz"), !previewRendering) { value ->
                     settings = settings.copy(sampleRateHz = when (value) {
                         "8 kHz" -> 8000
                         "16 kHz" -> 16000
@@ -254,7 +373,7 @@ fun AudioEffectsScreen(
                 }
             }
             item {
-                AudioChoices(listOf("22 kHz", "44.1 kHz", "48 kHz")) { value ->
+                AudioChoices(listOf("22 kHz", "44.1 kHz", "48 kHz"), !previewRendering) { value ->
                     settings = settings.copy(sampleRateHz = when (value) {
                         "22 kHz" -> 22050
                         "44.1 kHz" -> 44100
@@ -263,13 +382,104 @@ fun AudioEffectsScreen(
                 }
             }
             item {
-                AudioChoices(listOf("88.2 kHz", "96 kHz", "192 kHz")) { value ->
+                AudioChoices(listOf("88.2 kHz", "96 kHz", "192 kHz"), !previewRendering) { value ->
                     settings = settings.copy(sampleRateHz = when (value) {
                         "88.2 kHz" -> 88200
                         "96 kHz" -> 96000
                         else -> 192000
                     })
                 }
+            }
+
+            item { Text("Effect preview", style = MaterialTheme.typography.headlineSmall) }
+            item {
+                Button(
+                    onClick = ::renderPreview,
+                    enabled = sourceUri != null && durationMs > 0L && !previewRendering && !exporting,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    if (previewRendering) {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (previewRendering) "Rendering preview…" else "Render and play 15-second preview")
+                }
+            }
+
+            if (previewReady) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FilledTonalButton(
+                            onClick = {
+                                if (player.isPlaying) {
+                                    player.pause()
+                                } else {
+                                    if (player.playbackState == Player.STATE_ENDED) player.seekTo(0L)
+                                    player.play()
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Icon(
+                                if (previewPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = null,
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (previewPlaying) "Pause" else "Play")
+                        }
+                        FilledTonalButton(
+                            onClick = {
+                                player.seekTo(0L)
+                                player.play()
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Icon(Icons.Default.Replay, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Replay")
+                        }
+                        FilledTonalButton(
+                            onClick = {
+                                player.pause()
+                                player.seekTo(0L)
+                                previewPositionMs = 0L
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Icon(Icons.Default.Stop, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Stop")
+                        }
+                    }
+                }
+                item {
+                    val safePreviewDuration = previewDurationMs.coerceAtLeast(1L)
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(formatAudioTime(previewPositionMs))
+                        Text(formatAudioTime(previewDurationMs), color = MaterialTheme.colorScheme.primary)
+                    }
+                    Slider(
+                        value = previewPositionMs.coerceIn(0L, safePreviewDuration).toFloat(),
+                        onValueChange = { value ->
+                            previewPositionMs = value.toLong()
+                            player.seekTo(value.toLong())
+                        },
+                        valueRange = 0f..safePreviewDuration.toFloat(),
+                    )
+                }
+            }
+
+            item {
+                Text(
+                    "The preview is rendered with the same trim, speed, pitch and sample-rate pipeline used by export, so what you hear matches the saved file. Long selections preview their first 15 seconds.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             item { Text("Export", style = MaterialTheme.typography.headlineSmall) }
@@ -280,20 +490,25 @@ fun AudioEffectsScreen(
                     label = { Text("Output filename") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
+                    enabled = !exporting,
                 )
             }
             message?.let { text ->
                 item {
                     Text(
                         text,
-                        color = if (text.startsWith("Saved")) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error,
+                        color = if (text.startsWith("Saved") || text.startsWith("Preview ready")) {
+                            MaterialTheme.colorScheme.tertiary
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        },
                     )
                 }
             }
             item {
                 Button(
                     onClick = ::export,
-                    enabled = sourceUri != null && durationMs > 0L && !exporting,
+                    enabled = sourceUri != null && durationMs > 0L && !exporting && !previewRendering,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     if (exporting) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -307,10 +522,18 @@ fun AudioEffectsScreen(
 }
 
 @Composable
-private fun AudioChoices(labels: List<String>, onClick: (String) -> Unit) {
+private fun AudioChoices(
+    labels: List<String>,
+    enabled: Boolean,
+    onClick: (String) -> Unit,
+) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         labels.forEach { label ->
-            FilledTonalButton(onClick = { onClick(label) }, modifier = Modifier.weight(1f)) {
+            FilledTonalButton(
+                onClick = { onClick(label) },
+                modifier = Modifier.weight(1f),
+                enabled = enabled,
+            ) {
                 Text(label)
             }
         }
@@ -323,6 +546,7 @@ private fun AudioSlider(
     valueLabel: String,
     value: Float,
     range: ClosedFloatingPointRange<Float>,
+    enabled: Boolean,
     onChange: (Float) -> Unit,
 ) {
     Column {
@@ -330,7 +554,12 @@ private fun AudioSlider(
             Text(label, style = MaterialTheme.typography.titleSmall)
             Text(valueLabel, color = MaterialTheme.colorScheme.primary)
         }
-        Slider(value = value.coerceIn(range.start, range.endInclusive), onValueChange = onChange, valueRange = range)
+        Slider(
+            value = value.coerceIn(range.start, range.endInclusive),
+            onValueChange = onChange,
+            valueRange = range,
+            enabled = enabled,
+        )
     }
 }
 
