@@ -6,7 +6,7 @@ A native Android app that scans the device's shared media library for audio file
 
 - Scans every MediaStore audio volume Android exposes, including internal shared storage, SD cards, and attached media volumes.
 - Searches by title, artist, album, filename, folder, and MIME type.
-- Edits common tags: title, artist, album, album artist, genre, year, track, disc, composer, publisher/label, ISRC, BPM, copyright, comment, and lyrics.
+- Edits common tags: title, artist, album, album artist, genre, year, track, disc, composer, publisher/label, ISRC, BPM, comment, and lyrics.
 - Replaces or removes embedded cover artwork.
 - Handles Android scoped-storage write consent with `MediaStore.createWriteRequest()`.
 - Supports the formats handled by the Android jaudiotagger fork, including MP3 and several common tagged audio containers.
