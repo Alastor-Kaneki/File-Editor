@@ -58,7 +58,9 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.alastorkaneki.fileeditor.data.RobustMediaLoader
+import com.alastorkaneki.fileeditor.media.AudioExportFormats
 import com.alastorkaneki.fileeditor.media.AudioExportSettings
+import com.alastorkaneki.fileeditor.media.AudioExportTarget
 import com.alastorkaneki.fileeditor.media.MediaExportEngine
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -80,6 +82,10 @@ fun AudioEffectsScreen(
     var durationMs by remember { mutableStateOf(0L) }
     var settings by remember { mutableStateOf(AudioExportSettings()) }
     var outputName by remember { mutableStateOf("Edited-Audio") }
+    var selectedFormatId by remember { mutableStateOf(AudioExportFormats.M4A_AAC.id) }
+    var customExtension by remember { mutableStateOf("mp3") }
+    var customEncoder by remember { mutableStateOf("libmp3lame") }
+    var customMuxer by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var exporting by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -173,6 +179,14 @@ fun AudioEffectsScreen(
         return settings.copy(startMs = start, endMs = end)
     }
 
+    fun currentExportTarget(): AudioExportTarget =
+        AudioExportFormats.presets.firstOrNull { it.id == selectedFormatId }
+            ?: AudioExportFormats.custom(
+                extension = customExtension,
+                encoder = customEncoder,
+                muxer = customMuxer,
+            )
+
     fun preset(name: String) {
         settings = when (name) {
             "Nightcore" -> settings.copy(speed = 1.28f, pitch = 1.22f, sampleRateHz = 48000)
@@ -226,6 +240,10 @@ fun AudioEffectsScreen(
     fun export() {
         val uri = sourceUri ?: return
         if (exporting) return
+        val target = runCatching(::currentExportTarget).getOrElse { error ->
+            message = error.message ?: "Invalid output format"
+            return
+        }
         scope.launch {
             exporting = true
             message = null
@@ -234,12 +252,18 @@ fun AudioEffectsScreen(
                     input = uri,
                     settings = normalizedSettings(),
                     displayName = outputName,
+                    target = target,
                 )
-            }.onSuccess { message = "Saved ${outputName}.m4a to Music/FileEditor" }
-                .onFailure { message = "Audio export failed: ${it.message ?: it::class.java.simpleName}" }
+            }.onSuccess {
+                message = "Saved ${audioOutputName(outputName, target.extension)} to Music/FileEditor"
+            }.onFailure {
+                message = "Audio export failed: ${it.message ?: it::class.java.simpleName}"
+            }
             exporting = false
         }
     }
+
+    val selectedTarget = runCatching(::currentExportTarget).getOrNull()
 
     Scaffold(
         topBar = {
@@ -248,7 +272,7 @@ fun AudioEffectsScreen(
                     Column {
                         Text("Audio Effects")
                         Text(
-                            "Trim • speed • pitch • sample rate • preview • convert",
+                            "Trim • speed • pitch • preview • export formats",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -476,10 +500,73 @@ fun AudioEffectsScreen(
 
             item {
                 Text(
-                    "The preview is rendered with the same trim, speed, pitch and sample-rate pipeline used by export, so what you hear matches the saved file. Long selections preview their first 15 seconds.",
+                    "Preview and export use the same FFmpeg trim, speed, pitch and sample-rate filter chain. The selected output codec can still add its own compression characteristics.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+
+            item { Text("Output format", style = MaterialTheme.typography.headlineSmall) }
+            AudioExportFormats.presets.chunked(3).forEach { formats ->
+                item {
+                    AudioFormatChoices(
+                        formats = formats,
+                        selectedId = selectedFormatId,
+                        enabled = !exporting && !previewRendering,
+                    ) { selectedFormatId = it.id }
+                }
+            }
+            item {
+                FilledTonalButton(
+                    onClick = { selectedFormatId = AudioExportFormats.CUSTOM_ID },
+                    enabled = !exporting && !previewRendering,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (selectedFormatId == AudioExportFormats.CUSTOM_ID) "✓ Custom FFmpeg format" else "Custom FFmpeg format")
+                }
+            }
+
+            if (selectedFormatId == AudioExportFormats.CUSTOM_ID) {
+                item {
+                    OutlinedTextField(
+                        value = customExtension,
+                        onValueChange = { customExtension = it },
+                        label = { Text("File extension, for example ape or mka") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !exporting,
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        value = customEncoder,
+                        onValueChange = { customEncoder = it },
+                        label = { Text("FFmpeg audio encoder; blank = automatic") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !exporting,
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        value = customMuxer,
+                        onValueChange = { customMuxer = it },
+                        label = { Text("FFmpeg muxer; blank = infer from extension") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !exporting,
+                    )
+                }
+            }
+
+            selectedTarget?.let { target ->
+                item {
+                    Text(
+                        "Selected: ${target.label} — ${target.description}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
 
             item { Text("Export", style = MaterialTheme.typography.headlineSmall) }
@@ -514,8 +601,21 @@ fun AudioEffectsScreen(
                     if (exporting) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                     else Icon(Icons.Default.Save, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text(if (exporting) "Encoding audio…" else "Export AAC / M4A")
+                    Text(
+                        if (exporting) {
+                            "Encoding audio…"
+                        } else {
+                            "Export ${selectedTarget?.label ?: "custom audio"}"
+                        },
+                    )
                 }
+            }
+            item {
+                Text(
+                    "Common formats are configured automatically. Custom mode can request any encoder and container included in the bundled FFmpeg build; unsupported combinations return the FFmpeg error instead of silently changing formats.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -541,6 +641,29 @@ private fun AudioChoices(
 }
 
 @Composable
+private fun AudioFormatChoices(
+    formats: List<AudioExportTarget>,
+    selectedId: String,
+    enabled: Boolean,
+    onClick: (AudioExportTarget) -> Unit,
+) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        formats.forEach { format ->
+            FilledTonalButton(
+                onClick = { onClick(format) },
+                modifier = Modifier.weight(1f),
+                enabled = enabled,
+            ) {
+                Text(if (selectedId == format.id) "✓ ${format.label}" else format.label)
+            }
+        }
+        repeat((3 - formats.size).coerceAtLeast(0)) {
+            Spacer(Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
 private fun AudioSlider(
     label: String,
     valueLabel: String,
@@ -561,6 +684,11 @@ private fun AudioSlider(
             enabled = enabled,
         )
     }
+}
+
+private fun audioOutputName(name: String, extension: String): String {
+    val safe = name.trim().ifBlank { "Edited-Audio" }
+    return if (safe.endsWith(".$extension", ignoreCase = true)) safe else "$safe.$extension"
 }
 
 private fun formatAudioTime(milliseconds: Long): String {
