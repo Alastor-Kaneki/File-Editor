@@ -36,11 +36,17 @@ data class GifOptions(
 class GifEngine(private val context: Context) {
     fun createFromImages(uris: List<Uri>, options: GifOptions): File {
         require(uris.isNotEmpty()) { "Choose at least one image" }
-        val loaded = uris.take(options.maxFrames.coerceIn(1, 120)).map {
+        val selected = uris.take(options.maxFrames.coerceIn(1, 120))
+        val loaded = selected.map {
             RobustMediaLoader.loadBitmap(context, it, options.maxDimension.coerceIn(96, 2160))
         }
+        val frames = if (loaded.size == 1) {
+            List(options.maxFrames.coerceIn(2, 120)) { loaded.first() }
+        } else {
+            loaded
+        }
         return try {
-            encodeFrames(loaded, options)
+            encodeFrames(frames, options)
         } finally {
             loaded.forEach(Bitmap::recycle)
         }
