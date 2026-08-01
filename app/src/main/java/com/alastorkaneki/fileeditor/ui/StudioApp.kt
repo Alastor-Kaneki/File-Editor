@@ -21,8 +21,10 @@ import androidx.compose.material.icons.filled.Animation
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -49,9 +51,12 @@ import com.alastorkaneki.fileeditor.data.VisualMediaKind
 
 private enum class StudioMode {
     HOME,
-    AUDIO,
-    PHOTOS,
-    VIDEOS,
+    AUDIO_METADATA,
+    AUDIO_EFFECTS,
+    PHOTO_LIBRARY,
+    PHOTO_STUDIO,
+    VIDEO_LIBRARY,
+    VIDEO_STUDIO,
     GLITCH,
     GIF,
 }
@@ -86,7 +91,7 @@ fun StudioApp(
     val audioState by viewModel.state.collectAsStateWithLifecycle()
 
     BackHandler(enabled = mode != StudioMode.HOME) {
-        if (mode == StudioMode.AUDIO && audioState.editor != null) {
+        if (mode == StudioMode.AUDIO_METADATA && audioState.editor != null) {
             viewModel.closeEditor()
         } else {
             mode = StudioMode.HOME
@@ -96,11 +101,12 @@ fun StudioApp(
     MaterialTheme(colorScheme = StudioColors) {
         when (mode) {
             StudioMode.HOME -> StudioHomeScreen(onOpen = { mode = it })
-            StudioMode.AUDIO -> FileEditorApp(
+            StudioMode.AUDIO_METADATA -> FileEditorApp(
                 viewModel = viewModel,
                 onRequestPermission = onRequestAllPermissions,
             )
-            StudioMode.PHOTOS -> VisualLibraryScreen(
+            StudioMode.AUDIO_EFFECTS -> AudioEffectsScreen(onExit = { mode = StudioMode.HOME })
+            StudioMode.PHOTO_LIBRARY -> VisualLibraryScreen(
                 kind = VisualMediaKind.IMAGE,
                 hasPermission = hasImagePermission,
                 onRequestPermission = onRequestAllPermissions,
@@ -111,7 +117,11 @@ fun StudioApp(
                 },
                 onOpenGif = {},
             )
-            StudioMode.VIDEOS -> VisualLibraryScreen(
+            StudioMode.PHOTO_STUDIO -> ImageEditorScreen(
+                initialUri = null,
+                onExit = { mode = StudioMode.HOME },
+            )
+            StudioMode.VIDEO_LIBRARY -> VisualLibraryScreen(
                 kind = VisualMediaKind.VIDEO,
                 hasPermission = hasVideoPermission,
                 onRequestPermission = onRequestAllPermissions,
@@ -121,6 +131,10 @@ fun StudioApp(
                     initialGifVideoUri = uri
                     mode = StudioMode.GIF
                 },
+            )
+            StudioMode.VIDEO_STUDIO -> VideoEditorScreen(
+                initialUri = null,
+                onExit = { mode = StudioMode.HOME },
             )
             StudioMode.GLITCH -> GlitchScreen(
                 initialUri = initialGlitchUri,
@@ -146,33 +160,51 @@ private fun StudioHomeScreen(onOpen: (StudioMode) -> Unit) {
     val tools = remember {
         listOf(
             StudioTool(
-                StudioMode.AUDIO,
+                StudioMode.AUDIO_METADATA,
                 "Audio metadata",
-                "Search your music and edit tags, lyrics and cover art.",
+                "Search device audio and edit title, artist, album, lyrics, artwork, IDs and credits.",
                 Icons.Default.AudioFile,
             ),
             StudioTool(
-                StudioMode.PHOTOS,
-                "Photo editor",
-                "Browse photos, edit EXIF metadata and send them to Glitch Lab.",
+                StudioMode.AUDIO_EFFECTS,
+                "Audio effects",
+                "Trim, change speed and pitch independently, resample and convert to AAC/M4A.",
+                Icons.Default.GraphicEq,
+            ),
+            StudioTool(
+                StudioMode.PHOTO_LIBRARY,
+                "Photo metadata",
+                "Search photos and edit EXIF description, creator, copyright, camera and date fields.",
                 Icons.Default.PhotoLibrary,
             ),
             StudioTool(
-                StudioMode.VIDEOS,
-                "Video editor",
-                "Browse videos, rename and edit catalog metadata, or turn them into GIFs.",
+                StudioMode.PHOTO_STUDIO,
+                "Photo Studio",
+                "Color grading, exposure, filters, crop, rotate, blur, sharpen, pixelate and export.",
+                Icons.Default.Tune,
+            ),
+            StudioTool(
+                StudioMode.VIDEO_LIBRARY,
+                "Video metadata",
+                "Search videos, rename files, edit catalog fields and send clips to GIF Maker.",
+                Icons.Default.Movie,
+            ),
+            StudioTool(
+                StudioMode.VIDEO_STUDIO,
+                "Video Studio",
+                "Trim, rotate, flip, mute, resize, change frame rate, color grade and export MP4.",
                 Icons.Default.Movie,
             ),
             StudioTool(
                 StudioMode.GLITCH,
                 "Glitch Lab",
-                "Realtime RGB split, slice, block, noise and scanline previews.",
+                "Live RGB tearing, datamosh, pixel sort, smear, noise, scanlines and full-size export.",
                 Icons.Default.AutoFixHigh,
             ),
             StudioTool(
                 StudioMode.GIF,
                 "GIF maker",
-                "Build looping GIFs from images or video, with optional animated glitches.",
+                "Build looping GIFs from images or video with timing, sizing and animated glitch effects.",
                 Icons.Default.Animation,
             ),
         )
@@ -191,24 +223,17 @@ private fun StudioHomeScreen(onOpen: (StudioMode) -> Unit) {
                         )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                ),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
         },
     ) { padding ->
         LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
+            modifier = Modifier.fillMaxSize().padding(padding),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
-                Text(
-                    "Media Studio",
-                    style = MaterialTheme.typography.headlineMedium,
-                )
+                Text("Media Studio 1.2", style = MaterialTheme.typography.headlineMedium)
                 Spacer(Modifier.height(4.dp))
                 Text(
                     "Everything stays on-device. Pick a tool to begin.",
@@ -218,13 +243,9 @@ private fun StudioHomeScreen(onOpen: (StudioMode) -> Unit) {
             }
             items(tools, key = { it.mode.name }) { tool ->
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onOpen(tool.mode) },
+                    modifier = Modifier.fillMaxWidth().clickable { onOpen(tool.mode) },
                     shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                    ),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 ) {
                     Row(
                         modifier = Modifier.padding(18.dp),
@@ -237,9 +258,7 @@ private fun StudioHomeScreen(onOpen: (StudioMode) -> Unit) {
                             tint = MaterialTheme.colorScheme.primary,
                         )
                         Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 16.dp),
+                            modifier = Modifier.weight(1f).padding(horizontal = 16.dp),
                         ) {
                             Text(tool.title, style = MaterialTheme.typography.titleLarge)
                             Spacer(Modifier.height(4.dp))

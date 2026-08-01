@@ -1,7 +1,28 @@
+import java.util.Base64
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+val encodedPersistentKeystore = rootProject.file("signing/file-editor-dev.jks.b64")
+val decodedPersistentKeystore = layout.buildDirectory
+    .file("persistent-signing/file-editor-dev.jks")
+    .get()
+    .asFile
+
+check(encodedPersistentKeystore.isFile) {
+    "Missing persistent signing key: ${encodedPersistentKeystore.path}"
+}
+
+val decodedKeystoreBytes = Base64.getMimeDecoder().decode(encodedPersistentKeystore.readText())
+decodedPersistentKeystore.parentFile.mkdirs()
+if (
+    !decodedPersistentKeystore.isFile ||
+    !decodedPersistentKeystore.readBytes().contentEquals(decodedKeystoreBytes)
+) {
+    decodedPersistentKeystore.writeBytes(decodedKeystoreBytes)
 }
 
 android {
@@ -12,16 +33,33 @@ android {
         applicationId = "com.alastorkaneki.fileeditor"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 7
+        versionName = "1.4.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
 
+    signingConfigs {
+        create("persistentDev") {
+            storeFile = decodedPersistentKeystore
+            storePassword = "fileeditor-dev"
+            keyAlias = "fileeditor-dev"
+            keyPassword = "fileeditor-dev"
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+            enableV4Signing = true
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("persistentDev")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("persistentDev")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -46,6 +84,7 @@ android {
             "META-INF/LICENSE*",
             "META-INF/NOTICE*",
         )
+        jniLibs.pickFirsts += setOf("**/libc++_shared.so")
     }
 }
 
@@ -72,6 +111,18 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
+
+    implementation("androidx.media3:media3-transformer:1.10.1")
+    implementation("androidx.media3:media3-effect:1.10.1")
+    implementation("androidx.media3:media3-common:1.10.1")
+    implementation("androidx.media3:media3-exoplayer:1.10.1")
+
+    implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full:8.1.7")
+    // The maintained FFmpegKit artifact currently does not package these
+    // runtime classes transitively on every Gradle/AGP combination. Without
+    // them FFmpegKit crashes with NoClassDefFoundError for Exceptions.
+    implementation("com.arthenica:smart-exception-common:0.2.1")
+    implementation("com.arthenica:smart-exception-java:0.2.1")
 
     implementation("com.github.Adonai:jaudiotagger:2.3.15")
     implementation("com.squareup:gifencoder:0.10.1")
