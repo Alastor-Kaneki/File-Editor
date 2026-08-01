@@ -29,7 +29,6 @@ data class TagData(
     val composer: String = "",
     val comment: String = "",
     val lyrics: String = "",
-    val copyright: String = "",
     val publisher: String = "",
     val bpm: String = "",
     val isrc: String = "",
