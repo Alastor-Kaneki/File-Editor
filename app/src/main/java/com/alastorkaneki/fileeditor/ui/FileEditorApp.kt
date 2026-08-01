@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -97,35 +96,37 @@ fun FileEditorApp(
     onRequestPermission: () -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val snackbarHostState = remember { SnackbarHostState() }
+    val snackbars = remember { SnackbarHostState() }
 
     LaunchedEffect(state.message) {
         state.message?.let {
-            snackbarHostState.showSnackbar(it)
+            snackbars.showSnackbar(it)
             viewModel.consumeMessage()
         }
     }
 
     MaterialTheme(colorScheme = AppColors) {
-        when (val editor = state.editor) {
-            null -> LibraryScreen(
+        val editor = state.editor
+        if (editor == null) {
+            LibraryScreen(
                 hasPermission = state.hasPermission,
                 isScanning = state.isScanning,
                 tracks = state.visibleTracks,
                 totalCount = state.allTracks.size,
                 query = state.query,
-                snackbarHostState = snackbarHostState,
+                snackbars = snackbars,
                 onQueryChange = viewModel::setQuery,
                 onRequestPermission = onRequestPermission,
                 onRefresh = viewModel::scan,
                 onTrackClick = viewModel::openEditor,
             )
-            else -> EditorScreen(
+        } else {
+            EditorScreen(
                 session = editor,
                 isSaving = state.isSaving,
-                snackbarHostState = snackbarHostState,
+                snackbars = snackbars,
                 onBack = viewModel::closeEditor,
-                onSave = { draft -> viewModel.save(editor.track, draft) },
+                onSave = { viewModel.save(editor.track, it) },
             )
         }
     }
@@ -139,21 +140,21 @@ private fun LibraryScreen(
     tracks: List<AudioTrack>,
     totalCount: Int,
     query: String,
-    snackbarHostState: SnackbarHostState,
+    snackbars: SnackbarHostState,
     onQueryChange: (String) -> Unit,
     onRequestPermission: () -> Unit,
     onRefresh: () -> Unit,
     onTrackClick: (AudioTrack) -> Unit,
 ) {
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = { SnackbarHost(snackbars) },
         topBar = {
             TopAppBar(
                 title = {
                     Column {
                         Text("File Editor")
                         Text(
-                            text = if (hasPermission) "$totalCount audio files" else "Audio metadata editor",
+                            if (hasPermission) "$totalCount audio files" else "Audio metadata editor",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -198,12 +199,14 @@ private fun LibraryScreen(
                 isScanning && tracks.isEmpty() -> LoadingPanel("Scanning all device audio…")
                 tracks.isEmpty() -> EmptyPanel(query)
                 else -> LazyColumn(
-                    contentPadding = PaddingValues(bottom = 24.dp),
                     modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 24.dp),
                 ) {
                     items(tracks, key = { it.uri.toString() }) { track ->
-                        AudioRow(track = track, onClick = { onTrackClick(track) })
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                        AudioRow(track, onTrackClick)
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                        )
                     }
                 }
             }
@@ -213,7 +216,7 @@ private fun LibraryScreen(
 
 @Composable
 private fun PermissionPanel(modifier: Modifier, onRequestPermission: () -> Unit) {
-    Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Card(
             modifier = Modifier.padding(24.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -223,11 +226,10 @@ private fun PermissionPanel(modifier: Modifier, onRequestPermission: () -> Unit)
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Icon(Icons.Default.LibraryMusic, contentDescription = null, modifier = Modifier.size(52.dp))
+                Icon(Icons.Default.LibraryMusic, null, modifier = Modifier.size(52.dp))
                 Text("Audio access required", style = MaterialTheme.typography.headlineSmall)
                 Text(
                     "File Editor scans Android's shared audio library across internal storage, SD cards and attached media volumes. Private app folders remain protected by Android.",
-                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Button(onClick = onRequestPermission) { Text("Grant audio access") }
@@ -237,12 +239,12 @@ private fun PermissionPanel(modifier: Modifier, onRequestPermission: () -> Unit)
 }
 
 @Composable
-private fun LoadingPanel(label: String) {
+private fun LoadingPanel(text: String) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             CircularProgressIndicator()
             Spacer(Modifier.height(12.dp))
-            Text(label)
+            Text(text)
         }
     }
 }
@@ -255,11 +257,11 @@ private fun EmptyPanel(query: String) {
 }
 
 @Composable
-private fun AudioRow(track: AudioTrack, onClick: () -> Unit) {
+private fun AudioRow(track: AudioTrack, onClick: (AudioTrack) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable { onClick(track) }
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -270,26 +272,27 @@ private fun AudioRow(track: AudioTrack, onClick: () -> Unit) {
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(Icons.Default.AudioFile, contentDescription = null)
+            Icon(Icons.Default.AudioFile, null)
         }
         Spacer(Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = track.title.ifBlank { track.displayName },
+                track.title.ifBlank { track.displayName },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.titleMedium,
             )
             Text(
-                text = listOf(track.artist, track.album).filter(String::isNotBlank).joinToString(" • ")
+                listOf(track.artist, track.album)
+                    .filter(String::isNotBlank)
+                    .joinToString(" • ")
                     .ifBlank { track.displayName },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "${formatDuration(track.durationMs)} • ${formatBytes(track.sizeBytes)} • ${track.mimeType}",
+                "${formatDuration(track.durationMs)} • ${formatBytes(track.sizeBytes)} • ${track.mimeType}",
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.labelSmall,
@@ -305,12 +308,12 @@ private fun AudioRow(track: AudioTrack, onClick: () -> Unit) {
 private fun EditorScreen(
     session: EditorSession,
     isSaving: Boolean,
-    snackbarHostState: SnackbarHostState,
+    snackbars: SnackbarHostState,
     onBack: () -> Unit,
     onSave: (EditorDraft) -> Unit,
 ) {
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = { SnackbarHost(snackbars) },
         topBar = {
             TopAppBar(
                 title = {
@@ -323,13 +326,6 @@ private fun EditorScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack, enabled = !isSaving) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    if (session.tags != null) {
-                        IconButton(onClick = {}, enabled = false) {
-                            Icon(Icons.Default.Save, contentDescription = null)
-                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -345,6 +341,7 @@ private fun EditorScreen(
                     .padding(padding),
                 contentAlignment = Alignment.Center,
             ) { CircularProgressIndicator() }
+
             session.error != null -> Box(
                 Modifier
                     .fillMaxSize()
@@ -361,6 +358,7 @@ private fun EditorScreen(
                     Button(onClick = onBack) { Text("Back") }
                 }
             }
+
             session.tags != null -> LoadedEditor(
                 modifier = Modifier.padding(padding),
                 track = session.track,
@@ -388,9 +386,7 @@ private fun LoadedEditor(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    val artworkPicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent(),
-    ) { uri: Uri? ->
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             artworkLoading = true
@@ -403,14 +399,11 @@ private fun LoadedEditor(
                     require(BitmapFactory.decodeByteArray(bytes, 0, bytes.size) != null) {
                         "The selected file is not a supported image"
                     }
-                    bytes to context.contentResolver.getType(uri)
+                    bytes to (context.contentResolver.getType(uri) ?: "image/jpeg")
                 }
             }.onSuccess { (bytes, mime) ->
                 draft = draft.copy(
-                    fields = draft.fields.copy(
-                        artworkBytes = bytes,
-                        artworkMimeType = mime ?: "image/jpeg",
-                    ),
+                    fields = draft.fields.copy(artworkBytes = bytes, artworkMimeType = mime),
                     artworkChanged = true,
                 )
             }.onFailure { artworkError = it.message ?: "Unable to load artwork" }
@@ -428,7 +421,7 @@ private fun LoadedEditor(
                 bytes = draft.fields.artworkBytes,
                 loading = artworkLoading,
                 error = artworkError,
-                onPick = { artworkPicker.launch("image/*") },
+                onPick = { picker.launch("image/*") },
                 onRemove = {
                     draft = draft.copy(
                         fields = draft.fields.copy(artworkBytes = null, artworkMimeType = null),
@@ -439,38 +432,20 @@ private fun LoadedEditor(
         }
 
         item { SectionTitle("Core tags") }
-        item { MetadataField("Title", draft.fields.title) { draft = draft.withFields { copy(title = it) } } }
-        item { MetadataField("Artist", draft.fields.artist) { draft = draft.withFields { copy(artist = it) } } }
-        item { MetadataField("Album", draft.fields.album) { draft = draft.withFields { copy(album = it) } } }
-        item { MetadataField("Album artist", draft.fields.albumArtist) { draft = draft.withFields { copy(albumArtist = it) } } }
-        item { MetadataField("Genre", draft.fields.genre) { draft = draft.withFields { copy(genre = it) } } }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                MetadataField(
-                    label = "Year",
-                    value = draft.fields.year,
-                    modifier = Modifier.weight(1f),
-                    keyboardType = KeyboardType.Number,
-                ) { draft = draft.withFields { copy(year = it) } }
-                MetadataField(
-                    label = "Track",
-                    value = draft.fields.trackNumber,
-                    modifier = Modifier.weight(1f),
-                ) { draft = draft.withFields { copy(trackNumber = it) } }
-                MetadataField(
-                    label = "Disc",
-                    value = draft.fields.discNumber,
-                    modifier = Modifier.weight(1f),
-                ) { draft = draft.withFields { copy(discNumber = it) } }
-            }
-        }
+        item { MetadataField("Title", draft.fields.title) { draft = draft.edit { copy(title = it) } } }
+        item { MetadataField("Artist", draft.fields.artist) { draft = draft.edit { copy(artist = it) } } }
+        item { MetadataField("Album", draft.fields.album) { draft = draft.edit { copy(album = it) } } }
+        item { MetadataField("Album artist", draft.fields.albumArtist) { draft = draft.edit { copy(albumArtist = it) } } }
+        item { MetadataField("Genre", draft.fields.genre) { draft = draft.edit { copy(genre = it) } } }
+        item { MetadataField("Year", draft.fields.year, KeyboardType.Number) { draft = draft.edit { copy(year = it) } } }
+        item { MetadataField("Track", draft.fields.trackNumber) { draft = draft.edit { copy(trackNumber = it) } } }
+        item { MetadataField("Disc", draft.fields.discNumber) { draft = draft.edit { copy(discNumber = it) } } }
 
         item { SectionTitle("Credits and identifiers") }
-        item { MetadataField("Composer", draft.fields.composer) { draft = draft.withFields { copy(composer = it) } } }
-        item { MetadataField("Publisher / label", draft.fields.publisher) { draft = draft.withFields { copy(publisher = it) } } }
-        item { MetadataField("ISRC", draft.fields.isrc) { draft = draft.withFields { copy(isrc = it) } } }
-        item { MetadataField("BPM", draft.fields.bpm, keyboardType = KeyboardType.Number) { draft = draft.withFields { copy(bpm = it) } } }
-        item { MetadataField("Copyright", draft.fields.copyright) { draft = draft.withFields { copy(copyright = it) } } }
+        item { MetadataField("Composer", draft.fields.composer) { draft = draft.edit { copy(composer = it) } } }
+        item { MetadataField("Publisher / label", draft.fields.publisher) { draft = draft.edit { copy(publisher = it) } } }
+        item { MetadataField("ISRC", draft.fields.isrc) { draft = draft.edit { copy(isrc = it) } } }
+        item { MetadataField("BPM", draft.fields.bpm, KeyboardType.Number) { draft = draft.edit { copy(bpm = it) } } }
 
         item { SectionTitle("Text") }
         item {
@@ -479,7 +454,7 @@ private fun LoadedEditor(
                 value = draft.fields.comment,
                 singleLine = false,
                 minLines = 3,
-            ) { draft = draft.withFields { copy(comment = it) } }
+            ) { draft = draft.edit { copy(comment = it) } }
         }
         item {
             MetadataField(
@@ -487,12 +462,12 @@ private fun LoadedEditor(
                 value = draft.fields.lyrics,
                 singleLine = false,
                 minLines = 10,
-            ) { draft = draft.withFields { copy(lyrics = it) } }
+            ) { draft = draft.edit { copy(lyrics = it) } }
         }
 
         item {
             Text(
-                text = "${track.displayName}\n${track.relativePath.ifBlank { track.volumeName }}",
+                "${track.displayName}\n${track.relativePath.ifBlank { track.volumeName }}",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -507,11 +482,11 @@ private fun LoadedEditor(
                     .navigationBarsPadding(),
             ) {
                 if (isSaving) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(10.dp))
                     Text("Saving…")
                 } else {
-                    Icon(Icons.Default.Save, contentDescription = null)
+                    Icon(Icons.Default.Save, null)
                     Spacer(Modifier.width(8.dp))
                     Text("Save metadata")
                 }
@@ -556,19 +531,19 @@ private fun ArtworkEditor(
                     )
                     else -> Icon(
                         Icons.Default.AddPhotoAlternate,
-                        contentDescription = null,
+                        null,
                         modifier = Modifier.size(64.dp),
                     )
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onPick, enabled = !loading) {
-                    Icon(Icons.Default.AddPhotoAlternate, contentDescription = null)
+                    Icon(Icons.Default.AddPhotoAlternate, null)
                     Spacer(Modifier.width(8.dp))
                     Text(if (bytes == null) "Choose photo" else "Replace photo")
                 }
                 TextButton(onClick = onRemove, enabled = bytes != null && !loading) {
-                    Icon(Icons.Default.DeleteOutline, contentDescription = null)
+                    Icon(Icons.Default.DeleteOutline, null)
                     Spacer(Modifier.width(6.dp))
                     Text("Remove")
                 }
@@ -581,7 +556,7 @@ private fun ArtworkEditor(
 @Composable
 private fun SectionTitle(text: String) {
     Text(
-        text = text,
+        text,
         style = MaterialTheme.typography.titleLarge,
         modifier = Modifier.padding(top = 8.dp),
     )
@@ -591,31 +566,28 @@ private fun SectionTitle(text: String) {
 private fun MetadataField(
     label: String,
     value: String,
-    modifier: Modifier = Modifier.fillMaxWidth(),
+    keyboardType: KeyboardType = KeyboardType.Text,
     singleLine: Boolean = true,
     minLines: Int = 1,
-    keyboardType: KeyboardType = KeyboardType.Text,
     onValueChange: (String) -> Unit,
 ) {
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
         label = { Text(label) },
-        modifier = modifier,
+        modifier = Modifier.fillMaxWidth(),
         singleLine = singleLine,
         minLines = minLines,
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
     )
 }
 
-private inline fun EditorDraft.withFields(transform: TagData.() -> TagData): EditorDraft =
+private inline fun EditorDraft.edit(transform: TagData.() -> TagData): EditorDraft =
     copy(fields = fields.transform())
 
 private fun formatDuration(milliseconds: Long): String {
     val totalSeconds = milliseconds.coerceAtLeast(0) / 1_000
-    val minutes = totalSeconds / 60
-    val seconds = totalSeconds % 60
-    return "%d:%02d".format(Locale.US, minutes, seconds)
+    return "%d:%02d".format(Locale.US, totalSeconds / 60, totalSeconds % 60)
 }
 
 private fun formatBytes(bytes: Long): String {
