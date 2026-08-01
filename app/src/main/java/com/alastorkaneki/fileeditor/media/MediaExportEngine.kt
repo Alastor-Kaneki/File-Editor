@@ -9,8 +9,6 @@ import android.provider.MediaStore
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
-import androidx.media3.common.audio.AudioProcessor
-import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.Brightness
 import androidx.media3.effect.Contrast
@@ -25,10 +23,15 @@ import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.Transformer
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.FFmpegKitConfig
+import com.arthenica.ffmpegkit.ReturnCode
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Locale
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -111,19 +114,25 @@ class MediaExportEngine(private val context: Context) {
         input: Uri,
         settings: AudioExportSettings,
         displayName: String,
+        target: AudioExportTarget,
     ): Uri {
-        val output = File.createTempFile("file_editor_audio_", ".m4a", context.cacheDir)
-        try {
-            runTransformer(
-                editedMediaItem = buildAudioEditedMediaItem(input, settings),
+        val output = File.createTempFile(
+            "file_editor_audio_",
+            ".${target.extension}",
+            context.cacheDir,
+        )
+        return try {
+            renderAudioWithFfmpeg(
+                input = input,
+                settings = settings,
+                target = target,
                 output = output,
-                configure = { setAudioMimeType(MimeTypes.AUDIO_AAC) },
             )
-            return withContext(Dispatchers.IO) {
+            withContext(Dispatchers.IO) {
                 saveExport(
                     source = output,
-                    displayName = ensureExtension(displayName, "m4a"),
-                    mimeType = "audio/mp4",
+                    displayName = ensureExtension(displayName, target.extension),
+                    mimeType = target.mimeType,
                     collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
                     } else {
@@ -155,13 +164,11 @@ class MediaExportEngine(private val context: Context) {
 
         val output = File.createTempFile("file_editor_audio_preview_", ".m4a", context.cacheDir)
         return try {
-            runTransformer(
-                editedMediaItem = buildAudioEditedMediaItem(
-                    input,
-                    settings.copy(startMs = startMs, endMs = previewEndMs),
-                ),
+            renderAudioWithFfmpeg(
+                input = input,
+                settings = settings.copy(startMs = startMs, endMs = previewEndMs),
+                target = AudioExportFormats.M4A_AAC,
                 output = output,
-                configure = { setAudioMimeType(MimeTypes.AUDIO_AAC) },
             )
             output
         } catch (error: Throwable) {
@@ -170,22 +177,108 @@ class MediaExportEngine(private val context: Context) {
         }
     }
 
-    private fun buildAudioEditedMediaItem(
+    private suspend fun renderAudioWithFfmpeg(
         input: Uri,
         settings: AudioExportSettings,
-    ): EditedMediaItem {
-        val sonic = SonicAudioProcessor().apply {
-            setSpeed(settings.speed.coerceIn(0.25f, 4f))
-            setPitch(settings.pitch.coerceIn(0.25f, 4f))
-            if (settings.sampleRateHz > 0) setOutputSampleRateHz(settings.sampleRateHz)
+        target: AudioExportTarget,
+        output: File,
+    ) = withContext(Dispatchers.IO) {
+        val startMs = settings.startMs.coerceAtLeast(0L)
+        val endMs = settings.endMs
+        val inputParameter = FFmpegKitConfig.getSafParameterForRead(context, input)
+            ?: error("Unable to open the selected audio file")
+
+        val arguments = buildList {
+            add("-hide_banner")
+            add("-loglevel")
+            add("error")
+            add("-y")
+            if (startMs > 0L) {
+                add("-ss")
+                add(seconds(startMs))
+            }
+            add("-i")
+            add(inputParameter)
+            if (endMs != Long.MAX_VALUE) {
+                add("-t")
+                add(seconds((endMs - startMs).coerceAtLeast(1L)))
+            }
+            add("-map")
+            add("0:a:0")
+            add("-vn")
+
+            val filters = buildAudioFilters(settings)
+            if (filters.isNotEmpty()) {
+                add("-af")
+                add(filters.joinToString(","))
+            }
+
+            val outputRate = when {
+                settings.sampleRateHz > 0 -> settings.sampleRateHz
+                abs(settings.pitch - 1f) > 0.0005f -> 48_000
+                else -> 0
+            }
+            if (outputRate > 0) {
+                add("-ar")
+                add(outputRate.toString())
+            }
+
+            addAll(target.ffmpegArguments)
+            add(output.absolutePath)
         }
-        return EditedMediaItem.Builder(
-            clippedMediaItem(input, settings.startMs, settings.endMs),
-        )
-            .setRemoveVideo(true)
-            .setEffects(Effects(listOf<AudioProcessor>(sonic), emptyList()))
-            .build()
+
+        val session = FFmpegKit.executeWithArguments(arguments.toTypedArray())
+        if (!ReturnCode.isSuccess(session.returnCode)) {
+            val details = buildString {
+                append(session.allLogsAsString.orEmpty().takeLast(2_000))
+                if (isBlank()) append(session.failStackTrace.orEmpty())
+            }.trim()
+            error(
+                if (details.isBlank()) {
+                    "FFmpeg could not encode ${target.label} on this device"
+                } else {
+                    details
+                },
+            )
+        }
+        check(output.isFile && output.length() > 0L) {
+            "FFmpeg completed without creating an output file"
+        }
     }
+
+    private fun buildAudioFilters(settings: AudioExportSettings): List<String> {
+        val speed = settings.speed.coerceIn(0.25f, 4f).toDouble()
+        val pitch = settings.pitch.coerceIn(0.25f, 4f).toDouble()
+        return buildList {
+            if (abs(pitch - 1.0) > 0.0005) {
+                add("asetrate=sample_rate*${decimal(pitch)}")
+            }
+            addAll(atempoChain(speed / pitch))
+        }
+    }
+
+    private fun atempoChain(requestedFactor: Double): List<String> {
+        var factor = requestedFactor.coerceIn(0.0625, 16.0)
+        val filters = mutableListOf<String>()
+        while (factor < 0.5) {
+            filters += "atempo=0.5"
+            factor /= 0.5
+        }
+        while (factor > 2.0) {
+            filters += "atempo=2.0"
+            factor /= 2.0
+        }
+        if (abs(factor - 1.0) > 0.0005) {
+            filters += "atempo=${decimal(factor)}"
+        }
+        return filters
+    }
+
+    private fun seconds(milliseconds: Long): String =
+        String.format(Locale.US, "%.6f", milliseconds / 1_000.0)
+
+    private fun decimal(value: Double): String =
+        String.format(Locale.US, "%.6f", value)
 
     private fun clippedMediaItem(uri: Uri, startMs: Long, endMs: Long): MediaItem {
         val clipping = MediaItem.ClippingConfiguration.Builder()
@@ -293,8 +386,8 @@ class MediaExportEngine(private val context: Context) {
             }
             val uri = resolver.insert(collection, values) ?: error("Unable to create output file")
             try {
-                resolver.openOutputStream(uri, "w")?.use { output ->
-                    source.inputStream().use { input -> input.copyTo(output) }
+                resolver.openOutputStream(uri, "w")?.use { destination ->
+                    source.inputStream().use { input -> input.copyTo(destination) }
                 } ?: error("Unable to write output file")
                 resolver.update(
                     uri,
