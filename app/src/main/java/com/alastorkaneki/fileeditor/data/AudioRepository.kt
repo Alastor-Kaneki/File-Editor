@@ -53,7 +53,6 @@ class AudioRepository(private val context: Context) {
                 composer = tag.firstOr("", FieldKey.COMPOSER),
                 comment = tag.firstOr("", FieldKey.COMMENT),
                 lyrics = tag.firstOr("", FieldKey.LYRICS),
-                copyright = tag.firstOr("", FieldKey.COPYRIGHT),
                 publisher = tag.firstOr("", FieldKey.RECORD_LABEL),
                 bpm = tag.firstOr("", FieldKey.BPM),
                 isrc = tag.firstOr("", FieldKey.ISRC),
@@ -95,7 +94,6 @@ class AudioRepository(private val context: Context) {
             tag.setSafely(FieldKey.COMPOSER, draft.fields.composer, warnings)
             tag.setSafely(FieldKey.COMMENT, draft.fields.comment, warnings)
             tag.setSafely(FieldKey.LYRICS, draft.fields.lyrics, warnings)
-            tag.setSafely(FieldKey.COPYRIGHT, draft.fields.copyright, warnings)
             tag.setSafely(FieldKey.RECORD_LABEL, draft.fields.publisher, warnings)
             tag.setSafely(FieldKey.BPM, draft.fields.bpm, warnings)
             tag.setSafely(FieldKey.ISRC, draft.fields.isrc, warnings)
