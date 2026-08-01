@@ -24,7 +24,6 @@ import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.Transformer
 import com.arthenica.ffmpegkit.FFmpegKit
-import com.arthenica.ffmpegkit.FFmpegKitConfig
 import com.arthenica.ffmpegkit.ReturnCode
 import java.io.File
 import java.io.FileOutputStream
@@ -32,6 +31,7 @@ import java.util.Locale
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -183,67 +183,104 @@ class MediaExportEngine(private val context: Context) {
         target: AudioExportTarget,
         output: File,
     ) = withContext(Dispatchers.IO) {
-        val startMs = settings.startMs.coerceAtLeast(0L)
-        val endMs = settings.endMs
-        val inputParameter = FFmpegKitConfig.getSafParameterForRead(context, input)
-            ?: error("Unable to open the selected audio file")
+        val cachedInput = cacheAudioInput(input)
+        try {
+            val startMs = settings.startMs.coerceAtLeast(0L)
+            val endMs = settings.endMs
+            val arguments = buildList {
+                add("-hide_banner")
+                add("-loglevel")
+                add("error")
+                add("-nostdin")
+                add("-y")
+                if (startMs > 0L) {
+                    add("-ss")
+                    add(seconds(startMs))
+                }
+                add("-i")
+                add(cachedInput.absolutePath)
+                if (endMs != Long.MAX_VALUE) {
+                    add("-t")
+                    add(seconds((endMs - startMs).coerceAtLeast(1L)))
+                }
+                add("-map")
+                add("0:a:0")
+                add("-vn")
 
-        val arguments = buildList {
-            add("-hide_banner")
-            add("-loglevel")
-            add("error")
-            add("-y")
-            if (startMs > 0L) {
-                add("-ss")
-                add(seconds(startMs))
-            }
-            add("-i")
-            add(inputParameter)
-            if (endMs != Long.MAX_VALUE) {
-                add("-t")
-                add(seconds((endMs - startMs).coerceAtLeast(1L)))
-            }
-            add("-map")
-            add("0:a:0")
-            add("-vn")
+                val filters = buildAudioFilters(settings)
+                if (filters.isNotEmpty()) {
+                    add("-af")
+                    add(filters.joinToString(","))
+                }
 
-            val filters = buildAudioFilters(settings)
-            if (filters.isNotEmpty()) {
-                add("-af")
-                add(filters.joinToString(","))
+                val outputRate = settings.sampleRateHz.takeIf { it > 0 }
+                if (outputRate != null) {
+                    add("-ar")
+                    add(outputRate.toString())
+                }
+
+                addAll(target.ffmpegArguments)
+                add(output.absolutePath)
             }
 
-            val outputRate = when {
-                settings.sampleRateHz > 0 -> settings.sampleRateHz
-                abs(settings.pitch - 1f) > 0.0005f -> 48_000
-                else -> 0
-            }
-            if (outputRate > 0) {
-                add("-ar")
-                add(outputRate.toString())
+            val session = try {
+                FFmpegKit.executeWithArguments(arguments.toTypedArray())
+            } catch (error: UnsatisfiedLinkError) {
+                error("FFmpeg native libraries could not load on this device: ${error.message.orEmpty()}")
+            } catch (error: ExceptionInInitializerError) {
+                error("FFmpeg failed to initialize on this device: ${error.cause?.message ?: error.message.orEmpty()}")
             }
 
-            addAll(target.ffmpegArguments)
-            add(output.absolutePath)
+            if (!ReturnCode.isSuccess(session.returnCode)) {
+                val details = buildString {
+                    append(session.allLogsAsString.orEmpty().takeLast(3_000))
+                    if (isBlank()) append(session.failStackTrace.orEmpty())
+                }.trim()
+                error(
+                    if (details.isBlank()) {
+                        "FFmpeg could not encode ${target.label}; return code ${session.returnCode}"
+                    } else {
+                        details
+                    },
+                )
+            }
+            check(output.isFile && output.length() > 0L) {
+                "FFmpeg completed without creating an output file"
+            }
+        } finally {
+            cachedInput.delete()
         }
+    }
 
-        val session = FFmpegKit.executeWithArguments(arguments.toTypedArray())
-        if (!ReturnCode.isSuccess(session.returnCode)) {
-            val details = buildString {
-                append(session.allLogsAsString.orEmpty().takeLast(2_000))
-                if (isBlank()) append(session.failStackTrace.orEmpty())
-            }.trim()
-            error(
-                if (details.isBlank()) {
-                    "FFmpeg could not encode ${target.label} on this device"
-                } else {
-                    details
-                },
-            )
+    /**
+     * Some document providers expose content URIs that FFmpeg's SAF protocol cannot
+     * seek reliably. Copying to the app cache gives FFmpeg a normal seekable file
+     * and also avoids provider-specific permission failures.
+     */
+    private fun cacheAudioInput(input: Uri): File {
+        val extension = extensionForMime(context.contentResolver.getType(input))
+        val cached = File.createTempFile("file_editor_ffmpeg_input_", extension, context.cacheDir)
+        return try {
+            context.contentResolver.openInputStream(input)?.use { source ->
+                cached.outputStream().use { destination -> source.copyTo(destination) }
+            } ?: error("Unable to open the selected audio file")
+            check(cached.length() > 0L) { "The selected audio file is empty or unavailable" }
+            cached
+        } catch (error: Throwable) {
+            cached.delete()
+            throw error
         }
-        check(output.isFile && output.length() > 0L) {
-            "FFmpeg completed without creating an output file"
-        }
+    }
+
+    private fun extensionForMime(mimeType: String?): String = when (mimeType?.lowercase()) {
+        "audio/mpeg" -> ".mp3"
+        "audio/mp4", "audio/x-m4a" -> ".m4a"
+        "audio/wav", "audio/x-wav" -> ".wav"
+        "audio/flac" -> ".flac"
+        "audio/ogg" -> ".ogg"
+        "audio/aac" -> ".aac"
+        "audio/amr" -> ".amr"
+        else -> ".audio"
     }
 
     private fun buildAudioFilters(settings: AudioExportSettings): List<String> {
@@ -251,9 +288,16 @@ class MediaExportEngine(private val context: Context) {
         val pitch = settings.pitch.coerceIn(0.25f, 4f).toDouble()
         return buildList {
             if (abs(pitch - 1.0) > 0.0005) {
-                add("asetrate=sample_rate*${decimal(pitch)}")
+                // asetrate accepts a concrete rate, not an expression such as
+                // sample_rate*1.2. Normalize first, then shift pitch at 48 kHz.
+                val shiftedRate = (48_000.0 * pitch).roundToInt().coerceAtLeast(1_000)
+                add("aresample=48000")
+                add("asetrate=$shiftedRate")
             }
             addAll(atempoChain(speed / pitch))
+            if (abs(pitch - 1.0) > 0.0005) {
+                add("aresample=${settings.sampleRateHz.takeIf { it > 0 } ?: 48_000}")
+            }
         }
     }
 
