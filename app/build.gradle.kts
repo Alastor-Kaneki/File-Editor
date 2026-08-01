@@ -33,8 +33,8 @@ android {
         applicationId = "com.alastorkaneki.fileeditor"
         minSdk = 26
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.4.1"
+        versionCode = 7
+        versionName = "1.4.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -118,6 +118,12 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.10.1")
 
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full:8.1.7")
+    // The maintained FFmpegKit artifact currently does not package these
+    // runtime classes transitively on every Gradle/AGP combination. Without
+    // them FFmpegKit crashes with NoClassDefFoundError for Exceptions.
+    implementation("com.arthenica:smart-exception-common:0.2.1")
+    implementation("com.arthenica:smart-exception-java:0.2.1")
+
     implementation("com.github.Adonai:jaudiotagger:2.3.15")
     implementation("com.squareup:gifencoder:0.10.1")
 
