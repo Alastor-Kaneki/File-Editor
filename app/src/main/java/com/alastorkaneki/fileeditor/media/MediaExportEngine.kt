@@ -23,6 +23,7 @@ import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.Transformer
+import com.alastorkaneki.fileeditor.data.RobustMediaLoader
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import java.io.File
@@ -225,10 +226,21 @@ class MediaExportEngine(private val context: Context) {
 
             val session = try {
                 FFmpegKit.executeWithArguments(arguments.toTypedArray())
+            } catch (error: NoClassDefFoundError) {
+                throw IllegalStateException(
+                    "FFmpeg runtime dependency is missing: ${error.message.orEmpty()}",
+                    error,
+                )
             } catch (error: UnsatisfiedLinkError) {
-                error("FFmpeg native libraries could not load on this device: ${error.message.orEmpty()}")
+                throw IllegalStateException(
+                    "FFmpeg native libraries could not load on this device: ${error.message.orEmpty()}",
+                    error,
+                )
             } catch (error: ExceptionInInitializerError) {
-                error("FFmpeg failed to initialize on this device: ${error.cause?.message ?: error.message.orEmpty()}")
+                throw IllegalStateException(
+                    "FFmpeg failed to initialize on this device: ${error.cause?.message ?: error.message.orEmpty()}",
+                    error,
+                )
             }
 
             if (!ReturnCode.isSuccess(session.returnCode)) {
@@ -253,22 +265,14 @@ class MediaExportEngine(private val context: Context) {
     }
 
     /**
-     * Some document providers expose content URIs that FFmpeg's SAF protocol cannot
-     * seek reliably. Copying to the app cache gives FFmpeg a normal seekable file
-     * and also avoids provider-specific permission failures.
+     * Some document providers expose content URIs that FFmpeg cannot seek or open
+     * reliably. The shared robust loader tries a descriptor, typed asset and stream
+     * before returning a normal private file that FFmpeg can seek.
      */
     private fun cacheAudioInput(input: Uri): File {
         val extension = extensionForMime(context.contentResolver.getType(input))
-        val cached = File.createTempFile("file_editor_ffmpeg_input_", extension, context.cacheDir)
-        return try {
-            context.contentResolver.openInputStream(input)?.use { source ->
-                cached.outputStream().use { destination -> source.copyTo(destination) }
-            } ?: error("Unable to open the selected audio file")
+        return RobustMediaLoader.copyUriToCache(context, input, extension).also { cached ->
             check(cached.length() > 0L) { "The selected audio file is empty or unavailable" }
-            cached
-        } catch (error: Throwable) {
-            cached.delete()
-            throw error
         }
     }
 
@@ -288,8 +292,6 @@ class MediaExportEngine(private val context: Context) {
         val pitch = settings.pitch.coerceIn(0.25f, 4f).toDouble()
         return buildList {
             if (abs(pitch - 1.0) > 0.0005) {
-                // asetrate accepts a concrete rate, not an expression such as
-                // sample_rate*1.2. Normalize first, then shift pitch at 48 kHz.
                 val shiftedRate = (48_000.0 * pitch).roundToInt().coerceAtLeast(1_000)
                 add("aresample=48000")
                 add("asetrate=$shiftedRate")
