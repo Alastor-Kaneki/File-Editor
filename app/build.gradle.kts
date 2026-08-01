@@ -12,8 +12,8 @@ android {
         applicationId = "com.alastorkaneki.fileeditor"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -65,6 +65,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.4")
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
 
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
@@ -73,6 +74,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
 
     implementation("com.github.Adonai:jaudiotagger:2.3.15")
+    implementation("com.squareup:gifencoder:0.10.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
