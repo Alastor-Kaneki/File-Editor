@@ -1,7 +1,28 @@
+import java.util.Base64
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+val encodedPersistentKeystore = rootProject.file("signing/file-editor-dev.jks.b64")
+val decodedPersistentKeystore = layout.buildDirectory
+    .file("persistent-signing/file-editor-dev.jks")
+    .get()
+    .asFile
+
+check(encodedPersistentKeystore.isFile) {
+    "Missing persistent signing key: ${encodedPersistentKeystore.path}"
+}
+
+val decodedKeystoreBytes = Base64.getMimeDecoder().decode(encodedPersistentKeystore.readText())
+decodedPersistentKeystore.parentFile.mkdirs()
+if (
+    !decodedPersistentKeystore.isFile ||
+    !decodedPersistentKeystore.readBytes().contentEquals(decodedKeystoreBytes)
+) {
+    decodedPersistentKeystore.writeBytes(decodedKeystoreBytes)
 }
 
 android {
@@ -12,16 +33,33 @@ android {
         applicationId = "com.alastorkaneki.fileeditor"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 4
+        versionName = "1.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
 
+    signingConfigs {
+        create("persistentDev") {
+            storeFile = decodedPersistentKeystore
+            storePassword = "fileeditor-dev"
+            keyAlias = "fileeditor-dev"
+            keyPassword = "fileeditor-dev"
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+            enableV4Signing = true
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("persistentDev")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("persistentDev")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -76,6 +114,7 @@ dependencies {
     implementation("androidx.media3:media3-transformer:1.10.1")
     implementation("androidx.media3:media3-effect:1.10.1")
     implementation("androidx.media3:media3-common:1.10.1")
+    implementation("androidx.media3:media3-exoplayer:1.10.1")
 
     implementation("com.github.Adonai:jaudiotagger:2.3.15")
     implementation("com.squareup:gifencoder:0.10.1")
