@@ -1,7 +1,6 @@
 package com.alastorkaneki.fileeditor.ui
 
 import android.graphics.Bitmap
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -35,6 +34,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -55,12 +55,14 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.alastorkaneki.fileeditor.data.RobustMediaLoader
 import com.alastorkaneki.fileeditor.data.VisualMediaRepository
 import com.alastorkaneki.fileeditor.media.GifEngine
 import com.alastorkaneki.fileeditor.media.GifOptions
 import com.alastorkaneki.fileeditor.media.GlitchEngine
 import com.alastorkaneki.fileeditor.media.GlitchSettings
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
@@ -77,73 +79,105 @@ fun GifMakerScreen(
     val scope = rememberCoroutineScope()
     var imageUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var videoUri by remember(initialVideoUri) { mutableStateOf(initialVideoUri) }
+    var videoDurationMs by remember { mutableStateOf(0L) }
+    var trimStartMs by remember { mutableStateOf(0L) }
+    var trimEndMs by remember { mutableStateOf(Long.MAX_VALUE) }
+    var previewPosition by remember { mutableStateOf(0f) }
     var preview by remember { mutableStateOf<Bitmap?>(null) }
     var loadingPreview by remember { mutableStateOf(false) }
     var creating by remember { mutableStateOf(false) }
-    var delayMs by remember { mutableStateOf(180f) }
-    var maxFrames by remember { mutableStateOf(24f) }
+    var delayMs by remember { mutableStateOf(120f) }
+    var maxFrames by remember { mutableStateOf(36f) }
     var maxDimension by remember { mutableStateOf(720f) }
+    var loopCount by remember { mutableStateOf(0f) }
+    var reverse by remember { mutableStateOf(false) }
+    var pingPong by remember { mutableStateOf(false) }
+    var fitInside by remember { mutableStateOf(false) }
     var glitchEnabled by remember { mutableStateOf(false) }
     var glitchIntensity by remember { mutableStateOf(0.48f) }
     var glitchShift by remember { mutableStateOf(12f) }
     var glitchSlices by remember { mutableStateOf(16f) }
+    var glitchNoise by remember { mutableStateOf(0.09f) }
+    var glitchPixelSort by remember { mutableStateOf(0f) }
+    var glitchSmear by remember { mutableStateOf(0f) }
     var message by remember { mutableStateOf<String?>(null) }
 
-    val imagePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments(),
-    ) { uris ->
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) {
+            uris.forEach { RobustMediaLoader.persistReadPermission(context, it) }
             imageUris = uris
             videoUri = null
+            videoDurationMs = 0L
             message = null
         }
     }
 
-    val videoPicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument(),
-    ) { uri ->
+    val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
+            RobustMediaLoader.persistReadPermission(context, uri)
             videoUri = uri
             imageUris = emptyList()
             message = null
         }
     }
 
+    LaunchedEffect(videoUri) {
+        val uri = videoUri ?: run {
+            videoDurationMs = 0L
+            return@LaunchedEffect
+        }
+        runCatching { withContext(Dispatchers.IO) { RobustMediaLoader.readDurationMs(context, uri) } }
+            .onSuccess {
+                videoDurationMs = it
+                trimStartMs = 0L
+                trimEndMs = it
+                previewPosition = 0f
+            }
+            .onFailure { message = "Unable to read video: ${it.message ?: it::class.java.simpleName}" }
+    }
+
     val previewKey = videoUri?.toString() ?: imageUris.firstOrNull()?.toString()
-    LaunchedEffect(previewKey, glitchEnabled, glitchIntensity, glitchShift, glitchSlices) {
+    LaunchedEffect(
+        previewKey,
+        previewPosition,
+        glitchEnabled,
+        glitchIntensity,
+        glitchShift,
+        glitchSlices,
+        glitchNoise,
+        glitchPixelSort,
+        glitchSmear,
+    ) {
         val uri = videoUri ?: imageUris.firstOrNull() ?: run {
             preview?.recycle()
             preview = null
             return@LaunchedEffect
         }
         loadingPreview = true
+        delay(60)
         runCatching {
             withContext(Dispatchers.IO) {
                 val source = if (videoUri != null) {
-                    val retriever = MediaMetadataRetriever()
-                    try {
-                        retriever.setDataSource(context, uri)
-                        retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                            ?: error("Unable to decode video preview")
-                    } finally {
-                        retriever.release()
-                    }
+                    RobustMediaLoader.loadVideoFrame(
+                        context,
+                        uri,
+                        timeUs = (previewPosition * videoDurationMs * 1000L).toLong(),
+                        maxDimension = 900,
+                    )
                 } else {
-                    repository.loadBitmap(uri, 900)
+                    RobustMediaLoader.loadBitmap(context, uri, 900)
                 }
 
                 if (glitchEnabled) {
                     try {
-                        GlitchEngine.render(
-                            source,
-                            GlitchSettings(
-                                intensity = glitchIntensity,
-                                rgbShift = glitchShift.roundToInt(),
-                                sliceCount = glitchSlices.roundToInt(),
-                                noise = 0.09f,
-                                scanlines = 0.3f,
-                            ),
-                        )
+                        GlitchEngine.render(source, currentGifGlitch(
+                            glitchIntensity,
+                            glitchShift,
+                            glitchSlices,
+                            glitchNoise,
+                            glitchPixelSort,
+                            glitchSmear,
+                        ))
                     } finally {
                         source.recycle()
                     }
@@ -151,9 +185,9 @@ fun GifMakerScreen(
                     source
                 }
             }
-        }.onSuccess {
-            preview?.takeIf { old -> old !== it }?.recycle()
-            preview = it
+        }.onSuccess { result ->
+            preview?.takeIf { it !== result }?.recycle()
+            preview = result
         }.onFailure { message = "Preview failed: ${it.message ?: it::class.java.simpleName}" }
         loadingPreview = false
     }
@@ -163,28 +197,26 @@ fun GifMakerScreen(
         scope.launch {
             creating = true
             message = null
-            val glitch = if (glitchEnabled) {
-                GlitchSettings(
-                    intensity = glitchIntensity,
-                    rgbShift = glitchShift.roundToInt(),
-                    sliceCount = glitchSlices.roundToInt(),
-                    noise = 0.09f,
-                    scanlines = 0.3f,
-                )
-            } else {
-                null
-            }
             val options = GifOptions(
                 delayMs = delayMs.roundToInt(),
                 maxFrames = maxFrames.roundToInt(),
                 maxDimension = maxDimension.roundToInt(),
-                glitch = glitch,
+                loopCount = loopCount.roundToInt(),
+                reverse = reverse,
+                pingPong = pingPong,
+                fitInside = fitInside,
+                startMs = trimStartMs,
+                endMs = trimEndMs,
+                glitch = if (glitchEnabled) currentGifGlitch(
+                    glitchIntensity,
+                    glitchShift,
+                    glitchSlices,
+                    glitchNoise,
+                    glitchPixelSort,
+                    glitchSmear,
+                ) else null,
             )
-            val name = if (glitchEnabled) {
-                "Glitch-GIF-${System.currentTimeMillis()}.gif"
-            } else {
-                "GIF-${System.currentTimeMillis()}.gif"
-            }
+            val name = "${if (glitchEnabled) "Glitch-" else ""}GIF-${System.currentTimeMillis()}.gif"
 
             runCatching {
                 withContext(Dispatchers.IO) {
@@ -214,11 +246,7 @@ fun GifMakerScreen(
                 title = {
                     Column {
                         Text("GIF Maker")
-                        Text(
-                            sourceDescription,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Text(sourceDescription, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
                 navigationIcon = {
@@ -226,16 +254,12 @@ fun GifMakerScreen(
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                ),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
         },
     ) { padding ->
         LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
+            modifier = Modifier.fillMaxSize().padding(padding),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
@@ -243,7 +267,7 @@ fun GifMakerScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(360.dp)
+                        .height(340.dp)
                         .clip(RoundedCornerShape(20.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant),
                     contentAlignment = Alignment.Center,
@@ -268,10 +292,7 @@ fun GifMakerScreen(
             }
 
             item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(
                         onClick = { imagePicker.launch(arrayOf("image/*")) },
                         modifier = Modifier.weight(1f),
@@ -293,108 +314,111 @@ fun GifMakerScreen(
                 }
             }
 
-            item {
-                GifSlider(
-                    label = "Frame delay",
-                    valueLabel = "${delayMs.roundToInt()} ms",
-                    value = delayMs,
-                    range = 40f..1000f,
-                ) { delayMs = it }
-            }
-            item {
-                GifSlider(
-                    label = "Maximum frames",
-                    valueLabel = maxFrames.roundToInt().toString(),
-                    value = maxFrames,
-                    range = 2f..60f,
-                ) { maxFrames = it }
-            }
-            item {
-                GifSlider(
-                    label = "Maximum dimension",
-                    valueLabel = "${maxDimension.roundToInt()} px",
-                    value = maxDimension,
-                    range = 240f..1080f,
-                ) { maxDimension = it }
+            if (videoUri != null && videoDurationMs > 0L) {
+                item {
+                    GifSlider("Preview position", formatGifTime((previewPosition * videoDurationMs).toLong()), previewPosition, 0f..1f) {
+                        previewPosition = it
+                    }
+                }
+                item {
+                    Text("Video trim", style = MaterialTheme.typography.headlineSmall)
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(formatGifTime(trimStartMs))
+                        Text(formatGifTime(trimEndMs), color = MaterialTheme.colorScheme.primary)
+                    }
+                    RangeSlider(
+                        value = trimStartMs.toFloat()..trimEndMs.toFloat(),
+                        onValueChange = {
+                            trimStartMs = it.start.roundToInt().toLong()
+                            trimEndMs = it.endInclusive.roundToInt().toLong()
+                        },
+                        valueRange = 0f..videoDurationMs.toFloat().coerceAtLeast(1f),
+                    )
+                }
             }
 
+            item { Text("Animation", style = MaterialTheme.typography.headlineSmall) }
+            item { GifSlider("Frame delay", "${delayMs.roundToInt()} ms", delayMs, 20f..1500f) { delayMs = it } }
+            item { GifSlider("Maximum frames", maxFrames.roundToInt().toString(), maxFrames, 2f..120f) { maxFrames = it } }
+            item { GifSlider("Maximum dimension", "${maxDimension.roundToInt()} px", maxDimension, 160f..2160f) { maxDimension = it } }
+            item { GifSlider("Loop count", if (loopCount < 0.5f) "Infinite" else loopCount.roundToInt().toString(), loopCount, 0f..20f) { loopCount = it } }
+            item { GifToggle("Reverse frame order", reverse) { reverse = it } }
+            item { GifToggle("Ping-pong loop", pingPong) { pingPong = it } }
+            item { GifToggle("Fit entire image (letterbox)", fitInside) { fitInside = it } }
+
+            item { Text("Animated glitch", style = MaterialTheme.typography.headlineSmall) }
             item {
-                FilledTonalButton(
-                    onClick = { glitchEnabled = !glitchEnabled },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
+                FilledTonalButton(onClick = { glitchEnabled = !glitchEnabled }, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Default.AutoFixHigh, contentDescription = null)
                     Spacer(Modifier.width(10.dp))
-                    Text("Animated glitch")
+                    Text("Glitch every frame")
                     Spacer(Modifier.weight(1f))
                     Switch(checked = glitchEnabled, onCheckedChange = null)
                 }
             }
-
             if (glitchEnabled) {
-                item {
-                    GifSlider(
-                        label = "Glitch intensity",
-                        valueLabel = "${(glitchIntensity * 100).roundToInt()}%",
-                        value = glitchIntensity,
-                        range = 0f..1f,
-                    ) { glitchIntensity = it }
-                }
-                item {
-                    GifSlider(
-                        label = "RGB shift",
-                        valueLabel = "${glitchShift.roundToInt()} px",
-                        value = glitchShift,
-                        range = 0f..48f,
-                    ) { glitchShift = it }
-                }
-                item {
-                    GifSlider(
-                        label = "Slices per frame",
-                        valueLabel = glitchSlices.roundToInt().toString(),
-                        value = glitchSlices,
-                        range = 0f..60f,
-                    ) { glitchSlices = it }
-                }
+                item { GifSlider("Glitch intensity", "${(glitchIntensity * 100).roundToInt()}%", glitchIntensity, 0f..1f) { glitchIntensity = it } }
+                item { GifSlider("RGB shift", "${glitchShift.roundToInt()} px", glitchShift, 0f..72f) { glitchShift = it } }
+                item { GifSlider("Slices per frame", glitchSlices.roundToInt().toString(), glitchSlices, 0f..100f) { glitchSlices = it } }
+                item { GifSlider("Static noise", "${(glitchNoise * 100).roundToInt()}%", glitchNoise, 0f..0.6f) { glitchNoise = it } }
+                item { GifSlider("Pixel sorting", "${(glitchPixelSort * 100).roundToInt()}%", glitchPixelSort, 0f..1f) { glitchPixelSort = it } }
+                item { GifSlider("Datamosh smear", "${(glitchSmear * 100).roundToInt()}%", glitchSmear, 0f..1f) { glitchSmear = it } }
             }
 
             message?.let { text ->
                 item {
                     Text(
                         text,
-                        color = if (text.startsWith("Saved")) {
-                            MaterialTheme.colorScheme.tertiary
-                        } else {
-                            MaterialTheme.colorScheme.error
-                        },
+                        color = if (text.startsWith("Saved")) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error,
                     )
                 }
             }
-
             item {
                 Button(
                     onClick = ::createGif,
                     enabled = !creating && (videoUri != null || imageUris.isNotEmpty()),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    if (creating) {
-                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    } else {
-                        Icon(Icons.Default.Save, contentDescription = null)
-                    }
+                    if (creating) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    else Icon(Icons.Default.Save, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text(if (creating) "Encoding GIF…" else "Create and save GIF")
                 }
             }
-
             item {
                 Text(
-                    "GIF encoding uses a pure Java GIF89a engine suitable for Android. Video frames are extracted locally; no uploads or cloud processing are used.",
+                    "All decoding, frame extraction, glitching and GIF89a encoding happen locally on your device.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
+    }
+}
+
+private fun currentGifGlitch(
+    intensity: Float,
+    shift: Float,
+    slices: Float,
+    noise: Float,
+    pixelSort: Float,
+    smear: Float,
+): GlitchSettings = GlitchSettings(
+    intensity = intensity,
+    rgbShift = shift.roundToInt(),
+    sliceCount = slices.roundToInt(),
+    noise = noise,
+    scanlines = 0.25f,
+    pixelSort = pixelSort,
+    smear = smear,
+)
+
+@Composable
+private fun GifToggle(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    FilledTonalButton(onClick = { onChange(!checked) }, modifier = Modifier.fillMaxWidth()) {
+        Text(label)
+        Spacer(Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 
@@ -407,17 +431,17 @@ private fun GifSlider(
     onValueChange: (Float) -> Unit,
 ) {
     Column {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(label, style = MaterialTheme.typography.titleSmall)
             Text(valueLabel, color = MaterialTheme.colorScheme.primary)
         }
-        Slider(
-            value = value.coerceIn(range.start, range.endInclusive),
-            onValueChange = onValueChange,
-            valueRange = range,
-        )
+        Slider(value = value.coerceIn(range.start, range.endInclusive), onValueChange = onValueChange, valueRange = range)
     }
+}
+
+private fun formatGifTime(milliseconds: Long): String {
+    val totalSeconds = milliseconds.coerceAtLeast(0L) / 1000L
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return "%d:%02d".format(minutes, seconds)
 }
