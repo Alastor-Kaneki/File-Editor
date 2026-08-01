@@ -1,22 +1,45 @@
 # File Editor
 
-A native Android app that scans the device's shared media library for audio files, provides fast search, and edits embedded audio metadata.
+A native Android media utility that scans shared storage for audio, photos and videos, edits metadata, creates glitched images with realtime previews, and builds GIFs from images or video.
 
 ## Features
 
-- Scans every MediaStore audio volume Android exposes, including internal shared storage, SD cards, and attached media volumes.
-- Searches by title, artist, album, filename, folder, and MIME type.
-- Edits common tags: title, artist, album, album artist, genre, year, track, disc, composer, publisher/label, ISRC, BPM, comment, and lyrics.
+### Audio
+
+- Scans every MediaStore audio volume Android exposes, including internal shared storage, SD cards and attached media volumes.
+- Searches by title, artist, album, filename, folder and MIME type.
+- Edits title, artist, album, album artist, genre, year, track, disc, composer, publisher/label, ISRC, BPM, comments and lyrics.
 - Replaces or removes embedded cover artwork.
-- Handles Android scoped-storage write consent with `MediaStore.createWriteRequest()`.
-- Supports the formats handled by the Android jaudiotagger fork, including MP3 and several common tagged audio containers.
-- Uses a temporary working copy so tag editing works with `content://` MediaStore URIs.
+
+### Photos and videos
+
+- Scans and searches shared photo and video libraries.
+- Edits embedded EXIF fields in JPEG, PNG and WebP images: description, creator, copyright, comments, capture time, camera make/model and software.
+- Renames videos and edits MediaStore tags, category and language.
+- Uses Android scoped-storage write consent before modifying existing media.
+
+### Glitch Lab
+
+- Realtime preview while changing effect settings.
+- RGB channel splitting, horizontal displacement slices, corrupted blocks, digital noise and scanlines.
+- Deterministic seed controls with one-tap randomization.
+- Exports PNG or JPEG copies to `Pictures/FileEditor`.
+
+### GIF Maker
+
+- Builds GIF89a animations from multiple images.
+- Extracts frames from videos to create GIFs.
+- Optional per-frame glitch rendering for animated glitch GIFs.
+- Controls frame delay, frame count and output resolution.
+- Saves finished GIFs to `Pictures/FileEditor`.
+
+The GIF pipeline uses Square's pure Java GIF encoder, which is designed for Android. Image effects use an on-device bitmap pipeline instead of bundling the full native ImageMagick distribution, avoiding large ABI-specific native libraries while keeping the requested preview and conversion workflow entirely offline.
 
 ## Android storage behavior
 
-"Whole device" means all audio in Android's shared media collections. Android intentionally blocks third-party apps from scanning other apps' private sandboxes and parts of `Android/data`. File Editor does not request the highly restricted `MANAGE_EXTERNAL_STORAGE` permission.
+"Whole device" means all media exposed through Android's shared MediaStore collections. Android intentionally blocks third-party apps from scanning other apps' private sandboxes and protected parts of `Android/data`. File Editor does not request the highly restricted `MANAGE_EXTERNAL_STORAGE` permission.
 
-On Android 13 and newer, the app requests `READ_MEDIA_AUDIO`. On Android 12 and older, it requests the corresponding legacy storage permission. Android 11 and newer show a system confirmation before an existing media file is modified.
+On Android 13 and newer, the app requests `READ_MEDIA_AUDIO`, `READ_MEDIA_IMAGES` and `READ_MEDIA_VIDEO`. On Android 12 and older, it requests the corresponding legacy shared-storage permission. Glitch Lab and GIF Maker also support Android's system picker, so individual files can be chosen without full-library permission.
 
 ## Build
 
@@ -35,10 +58,12 @@ Requirements:
 ## Architecture
 
 - Kotlin + Jetpack Compose
-- MediaStore for discovery
-- jaudiotagger-android for embedded tag read/write
-- A single activity and lifecycle-aware ViewModel
+- MediaStore for discovery and gallery output
+- AndroidX ExifInterface for photo metadata
+- jaudiotagger-android for audio metadata
+- Square GIF Encoder for GIF89a output
+- Android Bitmap and MediaMetadataRetriever for effects and video-frame extraction
 
 ## Notes
 
-Tag support varies by container. If a format does not support a requested field, File Editor saves the supported fields and reports how many were skipped. Editing DRM-protected, cloud-placeholder, read-only, or system-owned audio may be blocked by the provider.
+Metadata support varies by file format and storage provider. Photo EXIF writes are supported for JPEG, PNG and WebP. Video codec, duration and resolution fields are read-only; editable catalog fields are saved through MediaStore. DRM-protected, cloud-placeholder, read-only or system-owned files may reject modifications.
