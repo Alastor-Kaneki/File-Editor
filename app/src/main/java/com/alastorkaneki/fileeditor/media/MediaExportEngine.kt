@@ -114,19 +114,8 @@ class MediaExportEngine(private val context: Context) {
     ): Uri {
         val output = File.createTempFile("file_editor_audio_", ".m4a", context.cacheDir)
         try {
-            val sonic = SonicAudioProcessor().apply {
-                setSpeed(settings.speed.coerceIn(0.25f, 4f))
-                setPitch(settings.pitch.coerceIn(0.25f, 4f))
-                if (settings.sampleRateHz > 0) setOutputSampleRateHz(settings.sampleRateHz)
-            }
-            val mediaItem = clippedMediaItem(input, settings.startMs, settings.endMs)
-            val edited = EditedMediaItem.Builder(mediaItem)
-                .setRemoveVideo(true)
-                .setEffects(Effects(listOf<AudioProcessor>(sonic), emptyList()))
-                .build()
-
             runTransformer(
-                editedMediaItem = edited,
+                editedMediaItem = buildAudioEditedMediaItem(input, settings),
                 output = output,
                 configure = { setAudioMimeType(MimeTypes.AUDIO_AAC) },
             )
@@ -146,6 +135,56 @@ class MediaExportEngine(private val context: Context) {
         } finally {
             output.delete()
         }
+    }
+
+    suspend fun renderAudioPreview(
+        input: Uri,
+        settings: AudioExportSettings,
+        maxSourceDurationMs: Long = 15_000L,
+    ): File {
+        val startMs = settings.startMs.coerceAtLeast(0L)
+        val selectedEndMs = if (settings.endMs == Long.MAX_VALUE) {
+            startMs + maxSourceDurationMs
+        } else {
+            settings.endMs
+        }
+        val previewEndMs = minOf(
+            selectedEndMs,
+            startMs + maxSourceDurationMs.coerceAtLeast(1_000L),
+        ).coerceAtLeast(startMs + 1L)
+
+        val output = File.createTempFile("file_editor_audio_preview_", ".m4a", context.cacheDir)
+        return try {
+            runTransformer(
+                editedMediaItem = buildAudioEditedMediaItem(
+                    input,
+                    settings.copy(startMs = startMs, endMs = previewEndMs),
+                ),
+                output = output,
+                configure = { setAudioMimeType(MimeTypes.AUDIO_AAC) },
+            )
+            output
+        } catch (error: Throwable) {
+            output.delete()
+            throw error
+        }
+    }
+
+    private fun buildAudioEditedMediaItem(
+        input: Uri,
+        settings: AudioExportSettings,
+    ): EditedMediaItem {
+        val sonic = SonicAudioProcessor().apply {
+            setSpeed(settings.speed.coerceIn(0.25f, 4f))
+            setPitch(settings.pitch.coerceIn(0.25f, 4f))
+            if (settings.sampleRateHz > 0) setOutputSampleRateHz(settings.sampleRateHz)
+        }
+        return EditedMediaItem.Builder(
+            clippedMediaItem(input, settings.startMs, settings.endMs),
+        )
+            .setRemoveVideo(true)
+            .setEffects(Effects(listOf<AudioProcessor>(sonic), emptyList()))
+            .build()
     }
 
     private fun clippedMediaItem(uri: Uri, startMs: Long, endMs: Long): MediaItem {
