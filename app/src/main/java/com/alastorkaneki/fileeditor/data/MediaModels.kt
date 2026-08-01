@@ -42,7 +42,18 @@ data class VideoTagData(
 )
 
 object VisualSearchMatcher {
-    fun matches(item: VisualMediaItem, rawQuery: String): Boolean {
+    fun matches(item: VisualMediaItem, rawQuery: String): Boolean = matches(
+        rawQuery = rawQuery,
+        fields = listOf(
+            item.displayName,
+            item.title,
+            item.mimeType,
+            item.relativePath,
+            "${item.width}x${item.height}",
+        ),
+    )
+
+    fun matches(rawQuery: String, fields: Iterable<String>): Boolean {
         val tokens = rawQuery
             .trim()
             .lowercase()
@@ -50,14 +61,7 @@ object VisualSearchMatcher {
             .filter(String::isNotBlank)
 
         if (tokens.isEmpty()) return true
-        val searchable = listOf(
-            item.displayName,
-            item.title,
-            item.mimeType,
-            item.relativePath,
-            "${item.width}x${item.height}",
-        ).joinToString(" ").lowercase()
-
+        val searchable = fields.joinToString(" ").lowercase()
         return tokens.all(searchable::contains)
     }
 }
